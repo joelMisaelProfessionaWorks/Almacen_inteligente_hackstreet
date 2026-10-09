@@ -1,29 +1,34 @@
 # Almacén Inteligente Hackstreet 🏭📦
 
-MVP de un **Almacén inteligente para un taller de reparación de equipo industrial**, construido utilizando una arquitectura orientada a eventos. 
+Sistema de gestión inteligente de inventario para un taller especializado en la reparación de equipo industrial (husillos y motores eléctricos). Construido con una arquitectura orientada a eventos para integrarse al ecosistema operativo del taller en tiempo real.
 
-Este proyecto fue diseñado para garantizar el control estricto de inventario, prevenir desabasto crítico y automatizar alertas mediante Inteligencia Artificial, emulando un entorno real con dispositivos IoT.
+Este proyecto da solución al desafío del Hackathon implementando un control estricto de existencias, reservas, faltantes, ubicaciones y movimientos inmutables, cumpliendo estrictamente con el contrato de eventos y la API OpenAPI (`openapi.yaml`) solicitada.
 
-## 🛠️ Stack Tecnológico
+## 🛠️ Stack Tecnológico y Patrocinadores
 
-- **Base de Datos:** Tiger Data (PostgreSQL).
-- **Backend:** Node.js + Express.js + pg.
-- **Frontend:** React + Vite + Tailwind CSS.
-- **Inteligencia Artificial:** API de ElevenLabs (generación de alertas de voz).
+El proyecto hace uso de tecnologías modernas y aprovecha las herramientas provistas por los patrocinadores del Hackathon:
 
-## 📋 Reglas del Negocio y Arquitectura
+- **Tiger Data (PostgreSQL):** Motor transaccional principal para guardar el inventario, el Kardex de piezas, las reservas, ubicaciones físicas y el historial inmutable de movimientos.
+- **Node.js + Express + KafkaJS:** Backend responsable de consumir los eventos de Kafka (Redpanda) emitidos por el simulador del taller (`shop.*`), aplicar las reglas de negocio, y exponer los endpoints REST exigidos por el contrato.
+- **ElevenLabs:** Inteligencia artificial para sintetizar voz dinámicamente y emitir alertas auditivas al personal cuando se detectan faltantes críticos (`shortages`) que bloquean órdenes de trabajo.
+- **Solana (Opcional/Exploración):** Exploraremos la posibilidad de anclar los hashes de nuestro *Audit Trail* (historial de movimientos) en la blockchain de Solana para garantizar una auditoría 100% inmutable y transparente.
+- **Vultr / Backboard.io (Opcional):** Posibles soluciones para el despliegue en la nube (VPS) y tableros analíticos del estado del inventario.
+- **React + Vite + Tailwind:** Frontend (Dashboard) para que los administradores visualicen los faltantes, el Kardex y escuchen las alertas de voz.
 
-1. **Control FIFO (First In, First Out):** El esquema separa el *Stock Físico* del *Stock Disponible* (piezas apartadas para reparaciones). Todo se administra mediante "Lotes" con fecha de ingreso para garantizar que las piezas más antiguas salgan primero.
-2. **Audit Trail Inmutable:** Una tabla de `Movimientos` registra de forma inmutable cada evento en el almacén (entradas, salidas, reservas).
-3. **Panel Simulador IoT:** El frontend no dependerá de formularios tradicionales, sino de un panel de simulación con botones que envían eventos JSON al backend (emulando hardware como escáneres RFID, drones y órdenes del ERP).
-4. **Alertas de Voz (ElevenLabs):** Cuando el sistema detecta que el inventario disponible de una pieza cae por debajo del nivel mínimo seguro (3 unidades), el backend detona una alerta y el frontend reproduce un mensaje de voz dinámico generado por IA.
+## 📋 Arquitectura y Reglas del Negocio
 
-## 🗺️ Roadmap del Proyecto (Fases de Desarrollo)
+1. **Arquitectura Orientada a Eventos:** Consumimos tópicos de Kafka (`shop.catalog`, `shop.work_orders`, `shop.inspections`, `shop.purchasing`) garantizando el manejo de desorden de eventos, reintentos y deduplicación mediante el `event_id`.
+2. **Control Multilocalidad y Kardex:** Seguimiento del stock físico (`on_hand`) distribuido por ubicaciones (`location_id` como la recepción `U-100` o estantes), manteniendo el *Stock Disponible* que resta las reservas de órdenes en curso.
+3. **Faltantes y Sugerencias de Compra:** El sistema detecta cuando una línea de inspección genera una necesidad no cubierta y levanta un registro de faltante. Si el faltante persiste, el sistema lanza la alarma de ElevenLabs y genera sugerencias de reorden (`reorder-suggestions`).
+4. **Pruebas de Contrato (Contract Tests):** El diseño está condicionado a pasar al 100% las pruebas automatizadas del jurado, emitiendo respuestas idénticas a los JSON Schemas esperados.
 
-- [x] **Fase 1 (Base de Datos):** Creación del esquema SQL optimizado para PostgreSQL cubriendo lotes, inventario, órdenes de trabajo, y movimientos inmutables.
-- [ ] **Fase 2 (Backend):** Inicialización del proyecto en Node.js, conexión a la base de datos y creación de los webhooks/endpoints para recibir eventos.
-- [ ] **Fase 3 (Integración IA):** Conexión del backend con ElevenLabs para el generador de alertas de voz en caso de faltantes.
-- [ ] **Fase 4 (Frontend):** Inicialización de React + Vite, construcción del Dashboard de inventario y la interfaz del Simulador IoT.
+## 🗺️ Roadmap del Proyecto (Fases Ajustadas)
+
+- [x] **Fase 1 (Base de Datos Inicial):** Creación del modelo relacional base (Tiger Data).
+- [ ] **Fase 1.5 (Ajuste al Contrato):** Refactorización del esquema SQL para incluir `locations`, rastreo de `event_id` para idempotencia, manejo de faltantes (`shortages`) y asociar reservas al `bom_line_id`.
+- [ ] **Fase 2 (Backend Kafka & API REST):** Inicialización de Node.js, conexión al broker local de Redpanda, creación de consumidores de eventos e implementación de la especificación `openapi.yaml`.
+- [ ] **Fase 3 (Alertas IA & Blockchain):** Conexión con ElevenLabs para las alertas de faltantes. Exploración de registro de auditoría en Solana.
+- [ ] **Fase 4 (Frontend Gerencial):** Desarrollo del panel visual para consultar los endpoints del Backend (estado de piezas, Kardex, faltantes) e integrar los audios.
 
 ---
-*Proyecto en desarrollo activo para Hackathon.*
+*Desarrollado para la Hackathon Hackstreet*

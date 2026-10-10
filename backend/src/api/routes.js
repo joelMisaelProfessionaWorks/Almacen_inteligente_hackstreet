@@ -1,9 +1,122 @@
 import { pool, withTransaction } from '../db.js';
-import { processIssue, processTransfer, processCount } from '../domain/inventory.js';
-import { generateDeterministicId, queueOutboxEvent } from '../domain/events.js';
+import { processCount, processIssue, processTransfer } from '../domain/inventory.js';
 import { processReceiptAndShortages } from '../handlers/purchasing.js';
 
+function normalizeSku(value) {
+    return String(value || '')
+        .trim()
+        .toUpperCase()
+        .replace(/\s+/g, ' ');
+}
+
+function mapLocationRow(row) {
+    return {
+        kind: 'location',
+        location_id: Number(row.location_id),
+        code: row.code,
+        name: row.name,
+        display: `${row.code}${row.name ? ` · ${row.name}` : ''}`,
+    };
+}
+
+function mapPartRow(row) {
+    const sku = row.sku || (row.part_id ? `P-${row.part_id}` : '');
+    return {
+        kind: 'part',
+        part_id: Number(row.part_id),
+        sku: sku,
+        name: row.name,
+        display: `${sku}${row.name ? ` · ${row.name}` : ''}`,
+    };
+}
+
 export function setupApiRoutes(app) {
+    app.get('/locations', async (req, res) => {
+        try {
+            const result = await pool.query(`
+                SELECT location_id, code, name
+                FROM locations
+                ORDER BY code ASC
+            `);
+
+            res.json({ items: result.rows.map(mapLocationRow) });
+        } catch (err) {
+            console.error(err);
+            res.status(500).json({ detail: 'Internal Server Error' });
+        }
+    });
+
+    app.get('/scan/:code', async (req, res) => {
+        try {
+            const rawCode = String(req.params.code || '').trim();
+            const normalizedSku = normalizeSku(rawCode);
+            const candidates = [];
+
+            const locationByCode = await pool.query(`
+                SELECT location_id, code, name
+                FROM locations
+                WHERE code = $1
+            `, [rawCode]);
+            candidates.push(...locationByCode.rows.map(mapLocationRow));
+
+            const numericLocationId = Number(rawCode);
+            if (Number.isInteger(numericLocationId) && String(numericLocationId) === rawCode) {
+                const locationById = await pool.query(`
+                    SELECT location_id, code, name
+                    FROM locations
+                    WHERE location_id = $1
+                `, [numericLocationId]);
+                candidates.push(...locationById.rows.map(mapLocationRow));
+            }
+
+            const partsBySku = await pool.query(`
+                SELECT part_id, sku, name
+                FROM parts
+                WHERE sku = $1 OR sku_norm = $2
+                ORDER BY part_id ASC
+            `, [rawCode, normalizedSku]);
+            candidates.push(...partsBySku.rows.map(mapPartRow));
+
+            const pMatch = /^P-(\d+)$/i.exec(rawCode);
+            if (pMatch) {
+                const partById = await pool.query(`
+                    SELECT part_id, sku, name
+                    FROM parts
+                    WHERE part_id = $1
+                `, [Number(pMatch[1])]);
+                candidates.push(...partById.rows.map(mapPartRow));
+            }
+
+            if (candidates.length === 0) {
+                return res.status(404).json({ detail: 'No se encontró coincidencia para el código escaneado' });
+            }
+
+            const unique = [];
+            const seen = new Set();
+            for (const item of candidates) {
+                const key = `${item.kind}:${item.location_id ?? item.part_id}`;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                unique.push(item);
+            }
+
+            const locations = unique.filter((item) => item.kind === 'location');
+            const parts = unique.filter((item) => item.kind === 'part');
+
+            if (locations.length === 1 && parts.length === 0) {
+                return res.json({ location: locations[0] });
+            }
+            if (parts.length === 1 && locations.length === 0) {
+                return res.json({ part: parts[0] });
+            }
+
+            return res.json({ kind: 'ambiguous', options: unique });
+        } catch (err) {
+            console.error(err);
+            res.status(500).json({ detail: 'Internal Server Error' });
+        }
+    });
+
     app.get('/parts/:part_id/availability', async (req, res) => {
         try {
             const partId = req.params.part_id;

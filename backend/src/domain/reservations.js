@@ -40,6 +40,7 @@ export async function processInspectionApproved(client, eventId, payload) {
         if (quantity === null || quantity === undefined) {
             quantity = bom.qty_per_unit;
         }
+        quantity = quantity !== null && quantity !== undefined ? Number(quantity) : 0;
 
         const partId = line.part_id || bom.part_id;
         

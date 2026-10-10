@@ -15,23 +15,20 @@ export async function startPublisher() {
     await producer.connect();
     console.log('Kafka Producer connected');
 
-    // Simple polling interval for outbox pattern
     setInterval(async () => {
         try {
             await publishPendingEvents();
         } catch (err) {
             console.error('Error in outbox publisher:', err);
         }
-    }, 2000); // Check every 2 seconds
+    }, 1000); 
 }
 
 async function publishPendingEvents() {
-    // We use an explicit transaction or just update RETURNING to claim rows safely.
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
 
-        // Select and lock up to 100 unpublished events
         const res = await client.query(`
             SELECT id, topic, key, payload 
             FROM outbox 
@@ -47,19 +44,37 @@ async function publishPendingEvents() {
             return;
         }
 
-        // Group messages by topic for Kafka
         const topicMessages = {};
         for (const event of events) {
             if (!topicMessages[event.topic]) {
                 topicMessages[event.topic] = [];
             }
+            
+            const payload = event.payload;
+            const event_id = payload.event_id || `evt-${event.id}`;
+            const event_type = payload.type || payload.event_type || 'unknown';
+            const occurred_at = payload.occurred_at || new Date().toISOString();
+            
+            const data = { ...payload };
+            delete data.event_id;
+            delete data.type;
+
+            const envelope = {
+                event_id,
+                event_type,
+                event_version: 1,
+                occurred_at,
+                source: "inventory",
+                key: event.key,
+                data
+            };
+
             topicMessages[event.topic].push({
                 key: event.key,
-                value: JSON.stringify(event.payload)
+                value: JSON.stringify(envelope)
             });
         }
 
-        // Send to Kafka
         for (const [topic, messages] of Object.entries(topicMessages)) {
             await producer.send({
                 topic,
@@ -67,7 +82,6 @@ async function publishPendingEvents() {
             });
         }
 
-        // Mark as published
         const ids = events.map(e => e.id);
         await client.query(`
             UPDATE outbox 

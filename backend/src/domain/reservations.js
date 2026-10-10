@@ -7,7 +7,7 @@ export async function processInspectionApproved(client, eventId, payload) {
     const woRes = await client.query(`SELECT code, deleted_at FROM work_orders WHERE work_order_id = $1`, [work_order_id]);
     if (woRes.rows.length === 0) {
         const err = new Error(`Work order ${work_order_id} not found`);
-        err.code = '23503'; // Fake FK violation to trigger retry
+        err.code = '23503'; 
         throw err;
     }
     const wo = woRes.rows[0];
@@ -42,16 +42,28 @@ export async function processInspectionApproved(client, eventId, payload) {
         }
 
         const partId = line.part_id;
+        
+        let partName = 'UNKNOWN';
+        if (partId) {
+            const partRowRes = await client.query(`SELECT name FROM parts WHERE part_id = $1`, [partId]);
+            if (partRowRes.rows.length > 0) partName = partRowRes.rows[0].name;
+        }
+
         if (partId === null || partId === undefined) {
             const outEventId = generateDeterministicId(`shortage-${eventId}-${line.bom_line_id}`);
-            await client.query(`INSERT INTO shortages (work_order_id, missing_quantity) VALUES ($1, $2)`, [work_order_id, quantity]);
+            await client.query(`
+                INSERT INTO shortages (work_order_id, missing_quantity, inspection_item_id) 
+                VALUES ($1, $2, $3)
+            `, [work_order_id, quantity, line.inspection_item_id]);
             
-            await queueOutboxEvent(client, 'inventory.events', `work_order:${wo.code}`, {
+            await queueOutboxEvent(client, 'inventory.events', wo.code, {
                 event_id: outEventId,
                 type: 'stock.shortage_detected',
-                work_order_code: wo.code,
+                work_order_id: work_order_id,
                 part_id: null,
+                name: partName,
                 missing_quantity: quantity,
+                inspection_item_id: line.inspection_item_id,
                 occurred_at: eventTime
             });
             continue;
@@ -98,22 +110,27 @@ export async function processInspectionApproved(client, eventId, payload) {
                 newlyReserved += toReserve;
             }
 
-            await client.query(`
+            const rInsert = await client.query(`
                 INSERT INTO reservations (work_order_id, bom_line_id, reserved_quantity, status)
                 VALUES ($1, $2, $3, 'active')
                 ON CONFLICT (work_order_id, bom_line_id) DO UPDATE SET
                     reserved_quantity = reservations.reserved_quantity + $3,
                     status = 'active'
+                RETURNING reservation_id
             `, [work_order_id, line.bom_line_id, newlyReserved]);
+            
+            const reservation_id = rInsert.rows[0].reservation_id;
 
             if (newlyReserved > 0) {
                 const resEventId = generateDeterministicId(`reserved-${eventId}-${line.bom_line_id}`);
-                await queueOutboxEvent(client, 'inventory.events', `part:${partId}`, {
+                await queueOutboxEvent(client, 'inventory.events', wo.code, {
                     event_id: resEventId,
                     type: 'stock.reserved',
+                    reservation_id: reservation_id,
+                    work_order_id: work_order_id,
                     part_id: partId,
-                    work_order_code: wo.code,
                     quantity: newlyReserved,
+                    inspection_item_id: line.inspection_item_id,
                     occurred_at: eventTime
                 });
             }
@@ -121,16 +138,18 @@ export async function processInspectionApproved(client, eventId, payload) {
             if (needed > 0) {
                 const shortEventId = generateDeterministicId(`shortage-${eventId}-${line.bom_line_id}`);
                 await client.query(`
-                    INSERT INTO shortages (part_id, work_order_id, missing_quantity) 
-                    VALUES ($1, $2, $3)
-                `, [partId, work_order_id, needed]);
+                    INSERT INTO shortages (part_id, work_order_id, missing_quantity, inspection_item_id) 
+                    VALUES ($1, $2, $3, $4)
+                `, [partId, work_order_id, needed, line.inspection_item_id]);
 
-                await queueOutboxEvent(client, 'inventory.events', `part:${partId}`, {
+                await queueOutboxEvent(client, 'inventory.events', wo.code, {
                     event_id: shortEventId,
                     type: 'stock.shortage_detected',
-                    work_order_code: wo.code,
+                    work_order_id: work_order_id,
                     part_id: partId,
+                    name: partName,
                     missing_quantity: needed,
+                    inspection_item_id: line.inspection_item_id,
                     occurred_at: eventTime
                 });
             }

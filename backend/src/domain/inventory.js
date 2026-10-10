@@ -5,49 +5,40 @@ import { queueOutboxEvent, generateDeterministicId } from './events.js';
 const TOPIC_OUT = 'inventory.events';
 
 export async function processIssue(payload) {
-    const { work_order_code, lines, occurred_at } = payload;
+    const { work_order_code, part_id, location_id, quantity, issued_by, occurred_at } = payload;
     const eventTime = occurred_at || new Date().toISOString();
 
     return await withTransaction(async (client) => {
-        // Resolver part_id y location_id (el schema de salida asume parts o locations ya creadas)
-        // Por simplicidad, el contrato pide un arreglo de objetos y produce un evento stock.issued
-        
-        let issuedLines = [];
-
-        for (const line of lines) {
-            // Asumimos que line tiene part_id, location_id, quantity
-            // Validar y descontar saldo
-            await recordMovement(client, {
-                partId: line.part_id,
-                locationId: line.location_id,
-                quantity: -Math.abs(line.quantity), // salida es negativo
-                type: 'issue',
-                referenceId: work_order_code,
-                occurredAt: eventTime
-            });
-
-            // En este punto, como pasamos la validación, descontamos también la reserva de esa work_order
-            // TODO: Integrar con domain/reservations.js para descontar la reserva al surtir
-
-            issuedLines.push({
-                part_id: line.part_id,
-                location_id: line.location_id,
-                quantity: Math.abs(line.quantity)
-            });
-        }
+        // Validar y descontar saldo
+        await recordMovement(client, {
+            partId: part_id,
+            locationId: location_id,
+            quantity: -Math.abs(quantity), // salida es negativo
+            type: 'issue',
+            referenceId: work_order_code,
+            occurredAt: eventTime
+        });
 
         // Generar stock.issued
-        const outEventId = generateDeterministicId(`issue-${work_order_code}-${eventTime}`);
+        const outEventId = generateDeterministicId(`issue-${work_order_code}-${part_id}-${eventTime}`);
+        
+        // Obtener work_order_id a partir del code
+        const woRes = await client.query(`SELECT work_order_id FROM work_orders WHERE code = $1`, [work_order_code]);
+        const work_order_id = woRes.rows.length > 0 ? woRes.rows[0].work_order_id : null;
+
         const outPayload = {
             event_id: outEventId,
             type: 'stock.issued',
-            work_order_code,
-            lines: issuedLines,
-            occurred_at: eventTime
+            work_order_id: work_order_id,
+            part_id: part_id,
+            location_id: location_id,
+            quantity: Math.abs(quantity),
+            issued_by: issued_by || 'system'
         };
 
+        // Llave (key): cdigo de la orden
         await queueOutboxEvent(client, TOPIC_OUT, work_order_code, outPayload);
-        return outPayload;
+        return { message: 'Issued successfully' };
     });
 }
 
@@ -81,14 +72,13 @@ export async function processTransfer(payload) {
             event_id: outEventId,
             type: 'stock.transferred',
             part_id,
-            source_location_id,
-            target_location_id,
-            quantity: Math.abs(quantity),
-            occurred_at: eventTime
+            from_location_id: source_location_id,
+            to_location_id: target_location_id,
+            quantity: Math.abs(quantity)
         };
 
         await queueOutboxEvent(client, TOPIC_OUT, `part:${part_id}`, outPayload);
-        return outPayload;
+        return { message: 'Transferred successfully' };
     });
 }
 
@@ -102,8 +92,6 @@ export async function processCount(payload) {
     const eventTime = occurred_at || new Date().toISOString();
 
     return await withTransaction(async (client) => {
-        // En un conteo, quantity es el NUEVO on_hand total de esa ubicación
-        // Obtenemos el saldo actual
         const res = await client.query(`
             SELECT on_hand FROM balances 
             WHERE part_id = $1 AND location_id = $2
@@ -130,8 +118,7 @@ export async function processCount(payload) {
                 location_id,
                 previous_quantity: currentOnHand,
                 new_quantity: quantity,
-                reason,
-                occurred_at: eventTime
+                reason
             };
 
             await queueOutboxEvent(client, TOPIC_OUT, `part:${part_id}`, outPayload);

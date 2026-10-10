@@ -21,7 +21,7 @@ export async function handlePurchasingEvent(eventId, type, payload) {
 }
 
 async function handlePurchaseItemReceived(client, eventId, payload) {
-    const { purpose, work_order_code, part_number, quantity, unit_price, occurred_at } = payload;
+    const { purpose, work_order_code, part_number, description, quantity, unit_price, currency, line_id, occurred_at } = payload;
     const eventTime = occurred_at || new Date().toISOString();
 
     if (purpose === 'customer_order') return;
@@ -36,11 +36,13 @@ async function handlePurchaseItemReceived(client, eventId, payload) {
         `, [eventId, part_number, quantity]);
 
         const outEventId = generateDeterministicId(`unmatched-${eventId}`);
-        await queueOutboxEvent(client, 'inventory.events', `receipt:${eventId}`, {
+        await queueOutboxEvent(client, 'inventory.events', `purchase_line:${line_id}`, {
             event_id: outEventId,
             type: 'stock.unmatched_receipt',
             receipt_event_id: eventId,
-            sku: part_number,
+            part_number: part_number || 'UNKNOWN',
+            description: description || 'UNKNOWN',
+            purchase_line_id: line_id,
             quantity: quantity,
             occurred_at: eventTime
         });
@@ -65,16 +67,15 @@ async function handlePurchaseItemReceived(client, eventId, payload) {
         type: 'stock.received',
         part_id: partId,
         location_id: locationId,
-        quantity,
-        unit_price,
+        purchase_line_id: line_id,
+        quantity: quantity,
+        unit_cost: unit_price ? Number(unit_price) : 0,
+        currency: currency || 'MXN',
         occurred_at: eventTime
     });
 
     // Regla 12: Surtir faltantes
-    // Primero los de work_order_code (si la orden vive y tiene faltante para este partId)
-    // Luego los demas por antigüedad
     let remainingReceiptQty = quantity;
-
     let targetWoId = null;
     if (work_order_code) {
         const woRes = await client.query(`SELECT work_order_id, deleted_at FROM work_orders WHERE code = $1`, [work_order_code]);
@@ -83,10 +84,8 @@ async function handlePurchaseItemReceived(client, eventId, payload) {
         }
     }
 
-    // Buscamos shortages abiertos para esta parte
-    // Ordenamos: si coincide con targetWoId primero, sino por id (antigüedad)
     const shortagesRes = await client.query(`
-        SELECT id, work_order_id, missing_quantity 
+        SELECT id, work_order_id, missing_quantity, inspection_item_id 
         FROM shortages 
         WHERE part_id = $1 AND status = 'open'
         ORDER BY (work_order_id = $2) DESC, created_at ASC
@@ -100,20 +99,20 @@ async function handlePurchaseItemReceived(client, eventId, payload) {
         
         const toResolve = Math.min(Number(shortage.missing_quantity), remainingReceiptQty);
         
-        // Convertimos shortage a reserva
         await client.query(`
             UPDATE balances SET reserved = reserved + $1 WHERE part_id = $2 AND location_id = $3
         `, [toResolve, partId, locationId]);
 
-        // Intentar actualizar la reservation de esta orden. 
-        // Nota: Un shortage puede venir de una o más líneas de bom para esa orden, pero en Hackathon simplificado sumamos
-        await client.query(`
+        const rUpdate = await client.query(`
             UPDATE reservations 
             SET reserved_quantity = reserved_quantity + $1
             WHERE work_order_id = $2 AND status = 'active'
+            RETURNING reservation_id
         `, [toResolve, shortage.work_order_id]);
 
-        // Actualizar shortage
+        let reservation_id = null;
+        if (rUpdate.rows.length > 0) reservation_id = rUpdate.rows[0].reservation_id;
+
         const remainingShortage = Number(shortage.missing_quantity) - toResolve;
         if (remainingShortage === 0) {
             await client.query(`UPDATE shortages SET missing_quantity = 0, status = 'resolved' WHERE id = $1`, [shortage.id]);
@@ -121,27 +120,29 @@ async function handlePurchaseItemReceived(client, eventId, payload) {
             await client.query(`UPDATE shortages SET missing_quantity = $1 WHERE id = $2`, [remainingShortage, shortage.id]);
         }
 
-        // Obtener código de orden para evento
         const woCodeRes = await client.query(`SELECT code FROM work_orders WHERE work_order_id = $1`, [shortage.work_order_id]);
         const woCode = woCodeRes.rows.length > 0 ? woCodeRes.rows[0].code : null;
 
         const resEventId = generateDeterministicId(`resolved-reserve-${eventId}-${shortage.id}-${resolvedCount}`);
-        await queueOutboxEvent(client, 'inventory.events', `part:${partId}`, {
+        await queueOutboxEvent(client, 'inventory.events', woCode, {
             event_id: resEventId,
             type: 'stock.reserved',
+            reservation_id: reservation_id || -1,
+            work_order_id: shortage.work_order_id,
             part_id: partId,
-            work_order_code: woCode,
             quantity: toResolve,
+            inspection_item_id: shortage.inspection_item_id || -1,
             occurred_at: eventTime
         });
 
         if (remainingShortage === 0 && woCode) {
             const shortResEventId = generateDeterministicId(`resolved-shortage-${eventId}-${shortage.id}-${resolvedCount}`);
-            await queueOutboxEvent(client, 'inventory.events', `work_order:${woCode}`, {
+            await queueOutboxEvent(client, 'inventory.events', woCode, {
                 event_id: shortResEventId,
                 type: 'stock.shortage_resolved',
-                work_order_code: woCode,
+                work_order_id: shortage.work_order_id,
                 part_id: partId,
+                quantity: toResolve,
                 occurred_at: eventTime
             });
         }

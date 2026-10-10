@@ -1,10 +1,11 @@
-﻿import { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { fetchApi } from '../api';
 
 export default function WarehousePage() {
   const [shortages, setShortages] = useState([]);
   const [suggestions, setSuggestions] = useState([]);
   const [unmatched, setUnmatched] = useState([]);
+  const [resolveIds, setResolveIds] = useState({});
   const [loading, setLoading] = useState(true);
 
   const loadData = async () => {
@@ -13,11 +14,11 @@ export default function WarehousePage() {
       const [sh, sg, un] = await Promise.all([
         fetchApi('/shortages'),
         fetchApi('/reorder-suggestions'),
-        fetchApi('/unmatched-receipts')
+        fetchApi('/unmatched-receipts'),
       ]);
       setShortages(sh.items || []);
       setSuggestions(sg.items || []);
-      setUnmatched(un.items || []);
+      setUnmatched((un.items || []).filter((u) => u.status !== 'resolved'));
     } catch (e) {
       console.error(e);
     } finally {
@@ -29,11 +30,13 @@ export default function WarehousePage() {
     loadData();
   }, []);
 
-  const handleResolveUnmatched = async (id, partId) => {
+  const handleResolveUnmatched = async (id) => {
+    const partId = resolveIds[id];
+    if (!partId) return;
     try {
-      await fetchApi(/unmatched-receipts//resolve, {
+      await fetchApi(`/unmatched-receipts/${id}/resolve`, {
         method: 'POST',
-        body: JSON.stringify({ part_id: parseInt(partId) })
+        body: JSON.stringify({ part_id: parseInt(partId) }),
       });
       loadData();
     } catch (e) {
@@ -45,15 +48,21 @@ export default function WarehousePage() {
 
   return (
     <div className="space-y-6">
-      <h2 className="text-2xl font-bold text-gray-800">Panel de Almacén</h2>
-      
+      <div className="flex justify-between items-center">
+        <h2 className="text-2xl font-bold text-gray-800">Panel de Almacén</h2>
+        <button onClick={loadData} className="bg-gray-200 px-3 py-1 rounded hover:bg-gray-300">
+          Actualizar
+        </button>
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Recepciones sin relacionar */}
         <div className="bg-white p-6 rounded-xl shadow-md border-l-4 border-red-500">
           <h3 className="text-xl font-semibold mb-4 text-gray-800">Recepciones Sin Relacionar</h3>
-          {unmatched.length === 0 ? <p className="text-gray-500">No hay recepciones pendientes.</p> : (
+          {unmatched.length === 0 ? (
+            <p className="text-gray-500">No hay recepciones pendientes.</p>
+          ) : (
             <ul className="space-y-3">
-              {unmatched.map(u => (
+              {unmatched.map((u) => (
                 <li key={u.id} className="p-3 bg-gray-50 rounded border">
                   <div className="flex justify-between">
                     <span className="font-medium text-red-600">SKU: {u.sku}</span>
@@ -61,9 +70,15 @@ export default function WarehousePage() {
                   </div>
                   <p className="text-sm text-gray-600 my-1">{u.description}</p>
                   <div className="flex gap-2 mt-2">
-                    <input type="number" id={esolve-} placeholder="ID de la Pieza" className="border p-1 text-sm rounded w-32" />
-                    <button 
-                      onClick={() => handleResolveUnmatched(u.id, document.getElementById(esolve-).value)}
+                    <input
+                      type="number"
+                      placeholder="ID de la Pieza"
+                      className="border p-1 text-sm rounded w-32"
+                      value={resolveIds[u.id] || ''}
+                      onChange={(e) => setResolveIds({ ...resolveIds, [u.id]: e.target.value })}
+                    />
+                    <button
+                      onClick={() => handleResolveUnmatched(u.id)}
                       className="bg-blue-600 text-white px-3 py-1 rounded text-sm hover:bg-blue-700"
                     >
                       Resolver
@@ -75,47 +90,47 @@ export default function WarehousePage() {
           )}
         </div>
 
-        {/* Sugerencias de Compra */}
         <div className="bg-white p-6 rounded-xl shadow-md border-l-4 border-blue-500">
           <h3 className="text-xl font-semibold mb-4 text-gray-800">Sugerencias de Compra</h3>
-          {suggestions.length === 0 ? <p className="text-gray-500">No hay sugerencias actuales.</p> : (
+          {suggestions.length === 0 ? (
+            <p className="text-gray-500">No hay sugerencias actuales.</p>
+          ) : (
             <ul className="space-y-3">
-              {suggestions.map(s => (
-                <li key={s.id} className="p-3 bg-gray-50 rounded border flex justify-between items-center">
+              {suggestions.map((s) => (
+                <li key={s.part_id} className="p-3 bg-gray-50 rounded border flex justify-between items-center">
                   <div>
                     <span className="font-bold">Pieza ID: {s.part_id}</span>
-                    <p className="text-sm text-gray-600">Faltantes Totales: {s.total_shortage}</p>
+                    <p className="text-sm text-gray-600">Órdenes: {(s.work_order_ids || []).join(', ')}</p>
                   </div>
-                  <div className="text-right">
-                    <span className="block text-lg font-bold text-blue-600">Sugerido: {s.suggested_quantity}</span>
-                  </div>
+                  <span className="text-lg font-bold text-blue-600">Sugerido: {s.suggested_quantity}</span>
                 </li>
               ))}
             </ul>
           )}
         </div>
 
-        {/* Faltantes Abiertos */}
         <div className="bg-white p-6 rounded-xl shadow-md border-l-4 border-orange-500 lg:col-span-2">
           <h3 className="text-xl font-semibold mb-4 text-gray-800">Faltantes Abiertos</h3>
-          {shortages.length === 0 ? <p className="text-gray-500">No hay faltantes registrados.</p> : (
+          {shortages.length === 0 ? (
+            <p className="text-gray-500">No hay faltantes registrados.</p>
+          ) : (
             <div className="overflow-x-auto">
               <table className="min-w-full divide-y divide-gray-200">
                 <thead className="bg-gray-50">
                   <tr>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Orden</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Línea BOM</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Pieza</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Faltante</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Orden</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Pieza</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Faltante</th>
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
-                  {shortages.map(s => (
-                    <tr key={s.id}>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{s.work_order_code || 'N/A'}</td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{s.bom_line_id || '-'}</td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{s.part_id || 'Desconocida'}</td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-orange-600">{s.missing_quantity}</td>
+                  {shortages.map((s, i) => (
+                    <tr key={i}>
+                      <td className="px-6 py-4 text-sm font-medium text-gray-900">{s.work_order_code || 'N/A'}</td>
+                      <td className="px-6 py-4 text-sm text-gray-500">
+                        {s.part_id ? `${s.part_id} - ${s.name}` : 'Desconocida'}
+                      </td>
+                      <td className="px-6 py-4 text-sm font-bold text-orange-600">{s.missing_quantity ?? '-'}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -127,4 +142,3 @@ export default function WarehousePage() {
     </div>
   );
 }
-

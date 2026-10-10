@@ -287,6 +287,15 @@ export function setupApiRoutes(app) {
             res.status(500).json({ detail: 'Internal Server Error' });
         }
     });
+    app.get('/work-orders', async (req, res) => {
+        try {
+            const result = await pool.query(`SELECT work_order_id, code, status FROM work_orders ORDER BY code ASC`);
+            res.json(result.rows);
+        } catch (err) {
+            console.error(err);
+            res.status(500).json({ detail: 'Internal Server Error' });
+        }
+    });
 
     app.get('/work-orders/:code/materials', async (req, res) => {
         try {

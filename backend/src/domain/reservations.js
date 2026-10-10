@@ -59,11 +59,11 @@ export async function processInspectionApproved(client, eventId, payload) {
             await queueOutboxEvent(client, 'inventory.events', wo.code, {
                 event_id: outEventId,
                 type: 'stock.shortage_detected',
-                work_order_id: work_order_id,
+                work_order_id: parseInt(work_order_id, 10),
                 part_id: null,
                 name: partName,
                 missing_quantity: quantity,
-                inspection_item_id: line.inspection_item_id,
+                inspection_item_id: parseInt(line.inspection_item_id, 10),
                 occurred_at: eventTime
             });
             continue;
@@ -126,11 +126,11 @@ export async function processInspectionApproved(client, eventId, payload) {
                 await queueOutboxEvent(client, 'inventory.events', wo.code, {
                     event_id: resEventId,
                     type: 'stock.reserved',
-                    reservation_id: reservation_id,
-                    work_order_id: work_order_id,
-                    part_id: partId,
+                    reservation_id: parseInt(reservation_id, 10),
+                    work_order_id: parseInt(work_order_id, 10),
+                    part_id: parseInt(partId, 10),
                     quantity: newlyReserved,
-                    inspection_item_id: line.inspection_item_id,
+                    inspection_item_id: parseInt(line.inspection_item_id, 10),
                     occurred_at: eventTime
                 });
             }
@@ -145,11 +145,11 @@ export async function processInspectionApproved(client, eventId, payload) {
                 await queueOutboxEvent(client, 'inventory.events', wo.code, {
                     event_id: shortEventId,
                     type: 'stock.shortage_detected',
-                    work_order_id: work_order_id,
-                    part_id: partId,
+                    work_order_id: parseInt(work_order_id, 10),
+                    part_id: parseInt(partId, 10),
                     name: partName,
                     missing_quantity: needed,
-                    inspection_item_id: line.inspection_item_id,
+                    inspection_item_id: parseInt(line.inspection_item_id, 10),
                     occurred_at: eventTime
                 });
             }

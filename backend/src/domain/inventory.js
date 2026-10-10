@@ -29,28 +29,29 @@ export async function processIssue(payload) {
         const outPayload = {
             event_id: outEventId,
             type: 'stock.issued',
-            work_order_id: work_order_id,
-            part_id: part_id,
-            location_id: location_id,
+            work_order_id: work_order_id ? parseInt(work_order_id, 10) : null,
+            work_order_code: work_order_code,
+            part_id: parseInt(part_id, 10),
+            location_id: parseInt(location_id, 10),
             quantity: Math.abs(quantity),
             issued_by: issued_by || 'system'
         };
 
-        // Llave (key): cdigo de la orden
+        // Llave (key): código de la orden
         await queueOutboxEvent(client, TOPIC_OUT, work_order_code, outPayload);
         return { message: 'Issued successfully' };
     });
 }
 
 export async function processTransfer(payload) {
-    const { part_id, source_location_id, target_location_id, quantity, occurred_at } = payload;
+    const { part_id, from_location_id, to_location_id, quantity, occurred_at } = payload;
     const eventTime = occurred_at || new Date().toISOString();
 
     return await withTransaction(async (client) => {
         // Descontar origen
         await recordMovement(client, {
             partId: part_id,
-            locationId: source_location_id,
+            locationId: from_location_id,
             quantity: -Math.abs(quantity),
             type: 'transfer_out',
             referenceId: null,
@@ -60,20 +61,20 @@ export async function processTransfer(payload) {
         // Incrementar destino
         await recordMovement(client, {
             partId: part_id,
-            locationId: target_location_id,
+            locationId: to_location_id,
             quantity: Math.abs(quantity),
             type: 'transfer_in',
             referenceId: null,
             occurredAt: eventTime
         });
 
-        const outEventId = generateDeterministicId(`transfer-${part_id}-${source_location_id}-${target_location_id}-${eventTime}`);
+        const outEventId = generateDeterministicId(`transfer-${part_id}-${from_location_id}-${to_location_id}-${eventTime}`);
         const outPayload = {
             event_id: outEventId,
             type: 'stock.transferred',
-            part_id,
-            from_location_id: source_location_id,
-            to_location_id: target_location_id,
+            part_id: parseInt(part_id, 10),
+            from_location_id: parseInt(from_location_id, 10),
+            to_location_id: parseInt(to_location_id, 10),
             quantity: Math.abs(quantity)
         };
 
@@ -114,8 +115,8 @@ export async function processCount(payload) {
             const outPayload = {
                 event_id: outEventId,
                 type: 'stock.adjusted',
-                part_id,
-                location_id,
+                part_id: parseInt(part_id, 10),
+                location_id: parseInt(location_id, 10),
                 previous_quantity: currentOnHand,
                 new_quantity: quantity,
                 reason

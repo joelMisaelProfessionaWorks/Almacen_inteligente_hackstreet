@@ -138,13 +138,12 @@ export function setupApiRoutes(app) {
             const unmatchedId = req.params.id;
             const { part_id, location_id } = req.body;
             
-            await withTransaction(async (client) => {
-                const uRes = await client.query(`SELECT * FROM unmatched_receipts WHERE id = $1 AND status = 'unresolved'`, [unmatchedId]);
-                if (uRes.rows.length === 0) {
-                    res.status(404).json({ detail: 'Not found or already resolved' });
-                    return;
-                }
+            const result = await withTransaction(async (client) => {
+                const uRes = await client.query(`SELECT * FROM unmatched_receipts WHERE id = $1`, [unmatchedId]);
+                if (uRes.rows.length === 0) return 'NOT_FOUND';
+                
                 const un = uRes.rows[0];
+                if (un.status === 'resolved') return 'ALREADY_RESOLVED';
                 
                 await client.query(`UPDATE unmatched_receipts SET status = 'resolved' WHERE id = $1`, [unmatchedId]);
 
@@ -158,9 +157,17 @@ export function setupApiRoutes(app) {
                     eventTime: new Date().toISOString(),
                     work_order_code: un.work_order_code
                 });
+                return 'OK';
             });
             
-            res.status(200).json({ detail: 'Recepcin relacionada exitosamente' });
+            if (result === 'NOT_FOUND') {
+                return res.status(404).json({ detail: 'Not found' });
+            }
+            if (result === 'ALREADY_RESOLVED') {
+                return res.status(409).json({ detail: 'Already resolved' });
+            }
+            
+            res.status(200).json({ detail: 'Recepción relacionada exitosamente' });
         } catch (err) {
             console.error(err);
             res.status(500).json({ detail: 'Internal Server Error' });

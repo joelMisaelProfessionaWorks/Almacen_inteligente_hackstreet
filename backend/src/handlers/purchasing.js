@@ -83,8 +83,8 @@ export async function processReceiptAndShortages(client, eventId, data) {
     await queueOutboxEvent(client, 'inventory.events', `part:${partId}`, {
         event_id: outEventId,
         type: 'stock.received',
-        part_id: partId,
-        location_id: locationId,
+        part_id: parseInt(partId, 10),
+        location_id: parseInt(locationId, 10),
         purchase_line_id: line_id,
         quantity: quantity,
         unit_cost: unit_price ? String(unit_price) : "0",
@@ -120,15 +120,22 @@ export async function processReceiptAndShortages(client, eventId, data) {
             UPDATE balances SET reserved = reserved + $1 WHERE part_id = $2 AND location_id = $3
         `, [toResolve, partId, locationId]);
 
-        const rUpdate = await client.query(`
+        let rUpdate = await client.query(`
             UPDATE reservations 
             SET reserved_quantity = reserved_quantity + $1
             WHERE work_order_id = $2 AND status = 'active'
             RETURNING reservation_id
         `, [toResolve, shortage.work_order_id]);
 
-        let reservation_id = null;
-        if (rUpdate.rows.length > 0) reservation_id = rUpdate.rows[0].reservation_id;
+        if (rUpdate.rows.length === 0) {
+            rUpdate = await client.query(`
+                INSERT INTO reservations (work_order_id, reserved_quantity, status)
+                VALUES ($1, $2, 'active')
+                RETURNING reservation_id
+            `, [shortage.work_order_id, toResolve]);
+        }
+
+        const reservation_id = rUpdate.rows[0].reservation_id;
 
         const remainingShortage = Number(shortage.missing_quantity) - toResolve;
         if (remainingShortage === 0) {
@@ -141,14 +148,18 @@ export async function processReceiptAndShortages(client, eventId, data) {
         const woCode = woCodeRes.rows.length > 0 ? woCodeRes.rows[0].code : null;
 
         const resEventId = generateDeterministicId(`resolved-reserve-${eventId}-${shortage.id}-${resolvedCount}-${Date.now()}`);
+        
+        // ensure integer inspection_item_id or 1 if missing
+        let inspId = shortage.inspection_item_id ? parseInt(shortage.inspection_item_id, 10) : 1;
+
         await queueOutboxEvent(client, 'inventory.events', woCode, {
             event_id: resEventId,
             type: 'stock.reserved',
-            reservation_id: reservation_id || -1,
-            work_order_id: shortage.work_order_id,
-            part_id: partId,
+            reservation_id: parseInt(reservation_id, 10),
+            work_order_id: parseInt(shortage.work_order_id, 10),
+            part_id: parseInt(partId, 10),
             quantity: toResolve,
-            inspection_item_id: shortage.inspection_item_id || -1,
+            inspection_item_id: inspId,
             occurred_at: eventTime
         });
 
@@ -157,8 +168,8 @@ export async function processReceiptAndShortages(client, eventId, data) {
             await queueOutboxEvent(client, 'inventory.events', woCode, {
                 event_id: shortResEventId,
                 type: 'stock.shortage_resolved',
-                work_order_id: shortage.work_order_id,
-                part_id: partId,
+                work_order_id: parseInt(shortage.work_order_id, 10),
+                part_id: parseInt(partId, 10),
                 quantity: toResolve,
                 occurred_at: eventTime
             });

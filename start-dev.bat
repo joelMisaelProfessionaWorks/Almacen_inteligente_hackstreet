@@ -66,7 +66,7 @@ start "Frontend - localhost:5174" /d "%ROOT%\frontend" cmd /k npm run dev -- --p
 REM ---------- 3. App movil ----------
 echo.
 echo [3/5] App movil (Vite, https puerto 5173)...
-if not exist "%ROOT%\movil\node_modules\@vitejs\plugin-basic-ssl" (
+if not exist "%ROOT%\movil\node_modules\vite" (
   echo    Instalando dependencias de movil...
   pushd "%ROOT%\movil"
   call npm install --silent

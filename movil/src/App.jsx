@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 
-const API_BASE = (import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/$/, '')
+const API_BASE = (import.meta.env.VITE_API_URL ?? '/api').replace(/\/$/, '')
 const tabs = [
   ['issue', 'Salida'],
   ['transfer', 'Transferir'],
@@ -139,52 +139,147 @@ function LookupField({
   )
 }
 
+const SCAN_FORMATS = ['code_128', 'code_39', 'ean_13', 'qr_code']
+
+function cameraErrorMessage(error) {
+  if (!window.isSecureContext) {
+    return 'La cámara solo funciona con HTTPS. Abre la app con https:// (ver instrucciones) o usa el modo manual.'
+  }
+  switch (error?.name) {
+    case 'NotAllowedError':
+    case 'SecurityError':
+      return 'Permiso de cámara denegado. Actívalo en los ajustes del navegador y vuelve a intentar.'
+    case 'NotFoundError':
+    case 'OverconstrainedError':
+      return 'No se encontró una cámara en este dispositivo.'
+    case 'NotReadableError':
+      return 'La cámara está ocupada por otra app. Ciérrala e intenta de nuevo.'
+    default:
+      return 'No se pudo abrir la cámara. Usa el modo manual.'
+  }
+}
+
 function ScannerModal({ target, onClose, onRead }) {
   const videoRef = useRef(null)
   const [manual, setManual] = useState('')
-  const [hint, setHint] = useState('Apunta la cámara a la etiqueta.')
+  const [hint, setHint] = useState('Abriendo cámara...')
+  const [live, setLive] = useState(false)
+
+  // Los callbacks cambian en cada render del padre; se guardan en refs para que
+  // el efecto de la cámara NO se reinicie (eso apagaba el video a medio arrancar).
+  const onReadRef = useRef(onRead)
+  const onCloseRef = useRef(onClose)
+  useEffect(() => {
+    onReadRef.current = onRead
+    onCloseRef.current = onClose
+  })
+
+  const hasTarget = Boolean(target)
 
   useEffect(() => {
-    if (!target) return undefined
+    if (!hasTarget) return undefined
 
-    let stream
-    let timer
+    const videoEl = videoRef.current
     let alive = true
+    let done = false
+    let stream = null
+    let timer = null
+    let controls = null
 
-    const start = async () => {
-      if (!navigator.mediaDevices?.getUserMedia) {
-        setHint('Escribe el código manualmente o usa un lector Bluetooth.')
+    const finish = (rawValue) => {
+      if (done || !rawValue) return
+      done = true
+      if (navigator.vibrate) navigator.vibrate(60)
+      void onReadRef.current(String(rawValue).trim())
+      onCloseRef.current()
+    }
+
+    const startNative = async () => {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      })
+      if (!alive || !videoRef.current) return
+      const video = videoRef.current
+      video.srcObject = stream
+      await video.play()
+      if (!alive) return
+      setLive(true)
+      setHint('Apunta la cámara a la etiqueta.')
+
+      const detector = new window.BarcodeDetector({ formats: SCAN_FORMATS })
+      let busy = false
+      timer = window.setInterval(async () => {
+        if (busy || done || video.readyState < 2) return
+        busy = true
+        try {
+          const found = await detector.detect(video)
+          if (found[0]?.rawValue) finish(found[0].rawValue)
+        } catch {
+          // Reintenta en el siguiente fotograma.
+        } finally {
+          busy = false
+        }
+      }, 250)
+    }
+
+    // iPhone/Safari y otros navegadores sin BarcodeDetector: decodificación por software.
+    const startZxing = async () => {
+      const [{ BrowserMultiFormatReader }, { BarcodeFormat, DecodeHintType }] = await Promise.all([
+        import('@zxing/browser'),
+        import('@zxing/library'),
+      ])
+      if (!alive || !videoRef.current) return
+
+      const hints = new Map()
+      hints.set(DecodeHintType.POSSIBLE_FORMATS, [
+        BarcodeFormat.CODE_128,
+        BarcodeFormat.CODE_39,
+        BarcodeFormat.EAN_13,
+        BarcodeFormat.QR_CODE,
+      ])
+      hints.set(DecodeHintType.TRY_HARDER, true)
+
+      const reader = new BrowserMultiFormatReader(hints, { delayBetweenScanAttempts: 150 })
+      const started = await reader.decodeFromConstraints(
+        {
+          video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: false,
+        },
+        videoRef.current,
+        (result) => {
+          if (result) finish(result.getText())
+        },
+      )
+      if (!alive) {
+        started.stop()
         return
       }
+      controls = started
+      setLive(true)
+      setHint('Apunta la cámara a la etiqueta. Aleja un poco el teléfono si no enfoca.')
+    }
 
+    const start = async () => {
+      if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+        setHint(cameraErrorMessage())
+        return
+      }
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } } })
-        if (!alive || !videoRef.current) return
-
-        videoRef.current.srcObject = stream
-        await videoRef.current.play()
-
-        if (!('BarcodeDetector' in window)) {
-          setHint('Este navegador no incluye detector nativo. Usa captura manual.')
-          return
-        }
-
-        const detector = new window.BarcodeDetector({ formats: ['code_128', 'code_39', 'ean_13', 'qr_code'] })
-        timer = window.setInterval(async () => {
-          if (!videoRef.current || videoRef.current.readyState < 2) return
+        if ('BarcodeDetector' in window) {
           try {
-            const found = await detector.detect(videoRef.current)
-            const rawValue = found[0]?.rawValue
-            if (rawValue) {
-              void onRead(rawValue)
-              onClose()
-            }
-          } catch {
-            // Reintenta en el siguiente fotograma.
+            await startNative()
+            return
+          } catch (error) {
+            if (error?.name === 'NotAllowedError') throw error
+            // BarcodeDetector sin soporte para algún formato: caer a zxing.
+            stream?.getTracks().forEach((track) => track.stop())
+            stream = null
           }
-        }, 300)
-      } catch {
-        setHint('No se pudo abrir la cámara. Usa el modo manual.')
+        }
+        await startZxing()
+      } catch (error) {
+        if (alive) setHint(cameraErrorMessage(error))
       }
     }
 
@@ -193,9 +288,12 @@ function ScannerModal({ target, onClose, onRead }) {
     return () => {
       alive = false
       window.clearInterval(timer)
+      controls?.stop()
       stream?.getTracks().forEach((track) => track.stop())
+      if (videoEl) videoEl.srcObject = null
+      setLive(false)
     }
-  }, [onClose, onRead, target])
+  }, [hasTarget])
 
   if (!target) return null
 
@@ -209,7 +307,7 @@ function ScannerModal({ target, onClose, onRead }) {
           </div>
           <button type="button" className="plain" onClick={onClose}>Cerrar</button>
         </div>
-        <video ref={videoRef} className="camera" playsInline muted />
+        <video ref={videoRef} className={`camera${live ? ' live' : ''}`} autoPlay playsInline muted />
         <p className="hint">{hint}</p>
         <form
           className="manual"
@@ -222,10 +320,11 @@ function ScannerModal({ target, onClose, onRead }) {
           }}
         >
           <input
-            autoFocus
             value={manual}
             onChange={(event) => setManual(event.target.value)}
             placeholder="Código leído"
+            autoCapitalize="characters"
+            autoCorrect="off"
           />
           <button className="secondary">Usar código</button>
         </form>

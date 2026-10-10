@@ -54,32 +54,32 @@ start "Backend - localhost:8000" /d "%ROOT%\backend" cmd /k npm run dev
 
 REM ---------- 2.5 Frontend ----------
 echo.
-echo [2.5/5] Frontend (Vite, puerto 5173)...
+echo [2.5/5] Frontend (Vite, puerto 5174)...
 if not exist "%ROOT%\frontend\node_modules" (
   echo    Instalando dependencias de frontend...
   pushd "%ROOT%\frontend"
   call npm install --silent
   popd
 )
-start "Frontend - localhost:5173" /d "%ROOT%\frontend" cmd /k npm run dev -- --port 5173
+start "Frontend - localhost:5174" /d "%ROOT%\frontend" cmd /k npm run dev -- --port 5174
 
 REM ---------- 3. App movil ----------
 echo.
-echo [3/5] App movil (Vite, puerto 5174)...
+echo [3/5] App movil (Vite, https puerto 5173)...
 if not exist "%ROOT%\movil\node_modules\vite" (
   echo    Instalando dependencias de movil...
   pushd "%ROOT%\movil"
   call npm install --silent
   popd
 )
-start "Movil - localhost:5174" /d "%ROOT%\movil" cmd /k "npm run build && npm run preview -- --port 5174"
+start "Movil - localhost:5173" /d "%ROOT%\movil" cmd /k "npm run build && npm run preview -- --port 5173"
 
 REM ---------- 4. Tunel Cloudflare ----------
 echo.
 echo [4/5] Tunel Cloudflare...
-echo    Esperando a que la app movil responda en el puerto 5174...
-powershell -NoProfile -Command "$ok=$false; for($i=0;$i -lt 90 -and -not $ok;$i++){ try { $c=New-Object Net.Sockets.TcpClient('127.0.0.1',5174); $c.Close(); $ok=$true } catch { Start-Sleep 1 } }; if($ok){exit 0}else{exit 1}"
-if errorlevel 1 echo    ADVERTENCIA: la app movil no abrio el puerto 5174 a tiempo; intento el tunel igual.
+echo    Esperando a que la app movil responda en el puerto 5173...
+powershell -NoProfile -Command "$ok=$false; for($i=0;$i -lt 90 -and -not $ok;$i++){ try { $c=New-Object Net.Sockets.TcpClient('127.0.0.1',5173); $c.Close(); $ok=$true } catch { Start-Sleep 1 } }; if($ok){exit 0}else{exit 1}"
+if errorlevel 1 echo    ADVERTENCIA: la app movil no abrio el puerto 5173 a tiempo; intento el tunel igual.
 
 where cloudflared >nul 2>&1
 if errorlevel 1 (set "CF=npx --yes cloudflared") else (set "CF=cloudflared")
@@ -87,7 +87,7 @@ echo    Usando: %CF%
 
 if exist cf-tunnel.log del /q cf-tunnel.log
 if exist cf-url.txt del /q cf-url.txt
-start "Cloudflare Tunnel" /min cmd /c %CF% tunnel --url http://localhost:5174 ^> cf-tunnel.log 2^>^&1
+start "Cloudflare Tunnel" /min cmd /c %CF% tunnel --url http://localhost:5173 ^> cf-tunnel.log 2^>^&1
 
 echo    Esperando la URL publica (puede tardar unos segundos)...
 powershell -NoProfile -Command "$u=$null; for($i=0;$i -lt 90 -and -not $u;$i++){ Start-Sleep 1; if(Test-Path 'cf-tunnel.log'){ $m=Select-String -Path 'cf-tunnel.log' -Pattern 'https://[a-z0-9-]+\.trycloudflare\.com' | Select-Object -First 1; if($m){ $u=$m.Matches[0].Value } } }; if($u){ Set-Content -Path 'cf-url.txt' -Value $u -NoNewline; Set-Clipboard $u }"
@@ -103,8 +103,8 @@ echo.
 echo   Backend API:       http://localhost:8000
 echo   Redpanda Console:  http://localhost:8080
 echo   Simulador:         http://localhost:8090
-echo   Frontend (PC):     http://localhost:5173
-echo   App movil (PC):    http://localhost:5174
+echo   Frontend (PC):     http://localhost:5174
+echo   App movil (PC):    http://localhost:5173
 echo.
 if defined TUNNEL_URL (
   echo   ABRE EN EL CELULAR: %TUNNEL_URL%

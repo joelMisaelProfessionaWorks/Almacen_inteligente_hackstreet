@@ -19,7 +19,7 @@ export default defineConfig(({ mode }) => {
   return {
     // basicSsl: certificado autofirmado -> getUserMedia (cámara) funciona en el celular.
     plugins: [react()],
-    server: { host: true, port: 5174, strictPort: true, allowedHosts: true, proxy },
-    preview: { host: true, port: 5174, strictPort: true, allowedHosts: true, proxy },
+    server: { host: true, port: 5173, strictPort: true, allowedHosts: true, proxy },
+    preview: { host: true, port: 5173, strictPort: true, allowedHosts: true, proxy },
   }
 })

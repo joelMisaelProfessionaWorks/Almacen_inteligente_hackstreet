@@ -26,7 +26,7 @@ CREATE TABLE work_orders (
 
 CREATE TABLE bom_lines (
     bom_line_id INT PRIMARY KEY,
-    work_order_id INT NOT NULL REFERENCES work_orders(work_order_id),
+    model_id INT NOT NULL REFERENCES work_orders(work_order_id),
     part_id INT REFERENCES parts(part_id),
     qty_per_unit NUMERIC,
     group_name VARCHAR(255)
@@ -34,7 +34,7 @@ CREATE TABLE bom_lines (
 
 CREATE TABLE inspections (
     inspection_id INT PRIMARY KEY,
-    work_order_id INT NOT NULL REFERENCES work_orders(work_order_id),
+    model_id INT NOT NULL REFERENCES work_orders(work_order_id),
     voided_at TIMESTAMP WITH TIME ZONE NULL
 );
 
@@ -61,7 +61,7 @@ CREATE TABLE movements (
 
 -- Reservas, necesidades y faltantes
 CREATE TABLE needs (
-    work_order_id INT NOT NULL REFERENCES work_orders(work_order_id),
+    model_id INT NOT NULL REFERENCES work_orders(work_order_id),
     bom_line_id INT NOT NULL, -- No fk a bom_lines porque puede llegar antes
     inspection_id INT NOT NULL REFERENCES inspections(inspection_id),
     required_quantity NUMERIC NOT NULL,
@@ -70,7 +70,7 @@ CREATE TABLE needs (
 
 CREATE TABLE reservations (
     reservation_id BIGSERIAL PRIMARY KEY,
-    work_order_id INT NOT NULL REFERENCES work_orders(work_order_id),
+    model_id INT NOT NULL REFERENCES work_orders(work_order_id),
     bom_line_id INT NOT NULL,
     reserved_quantity NUMERIC NOT NULL DEFAULT 0,
     fulfilled_quantity NUMERIC NOT NULL DEFAULT 0,

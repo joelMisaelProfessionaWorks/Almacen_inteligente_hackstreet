@@ -5,7 +5,11 @@ export async function processInspectionApproved(client, eventId, payload) {
     const eventTime = occurred_at || new Date().toISOString();
 
     const woRes = await client.query(`SELECT code, deleted_at FROM work_orders WHERE work_order_id = $1`, [work_order_id]);
-    if (woRes.rows.length === 0) throw new Error(`Work order ${work_order_id} not found`);
+    if (woRes.rows.length === 0) {
+        const err = new Error(`Work order ${work_order_id} not found`);
+        err.code = '23503'; // Fake FK violation to trigger retry
+        throw err;
+    }
     const wo = woRes.rows[0];
 
     if (wo.deleted_at) {
@@ -25,7 +29,11 @@ export async function processInspectionApproved(client, eventId, payload) {
         if (line.action !== 'buy') continue;
 
         const bomRes = await client.query(`SELECT part_id, qty_per_unit FROM bom_lines WHERE bom_line_id = $1`, [line.bom_line_id]);
-        if (bomRes.rows.length === 0) throw new Error(`BOM line ${line.bom_line_id} not found`);
+        if (bomRes.rows.length === 0) {
+            const err = new Error(`BOM line ${line.bom_line_id} not found`);
+            err.code = '23503';
+            throw err;
+        }
         const bom = bomRes.rows[0];
 
         let quantity = line.quantity;

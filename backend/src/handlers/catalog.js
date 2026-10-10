@@ -65,17 +65,17 @@ async function handleLocationUpserted(client, payload) {
 }
 
 async function handleBomUpserted(client, payload) {
-    const { work_order_id, lines } = payload;
+    const { model_id, lines } = payload;
     for (const line of lines) {
         await client.query(`
-            INSERT INTO bom_lines (bom_line_id, work_order_id, part_id, qty_per_unit, group_name)
+            INSERT INTO bom_lines (bom_line_id, model_id, part_id, qty_per_unit, group_name)
             VALUES ($1, $2, $3, $4, $5)
             ON CONFLICT (bom_line_id) DO UPDATE SET
-                work_order_id = EXCLUDED.work_order_id,
+                model_id = EXCLUDED.model_id,
                 part_id = EXCLUDED.part_id,
                 qty_per_unit = EXCLUDED.qty_per_unit,
                 group_name = EXCLUDED.group_name
-        `, [line.bom_line_id, work_order_id, line.part_id, line.qty_per_unit, line.group_name]);
+        `, [line.bom_line_id, model_id, line.part_id, line.qty_per_unit, line.group_name]);
     }
 }
 

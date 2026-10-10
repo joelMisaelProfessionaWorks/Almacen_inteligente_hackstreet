@@ -4,6 +4,7 @@ import { handleCatalogEvent } from '../handlers/catalog.js';
 import { handlePurchasingEvent } from '../handlers/purchasing.js';
 import { handleWorkOrderEvent } from '../handlers/workOrders.js';
 import { handleInspectionEvent } from '../handlers/inspections.js';
+import { pool } from '../db.js';
 
 dotenv.config();
 
@@ -13,6 +14,46 @@ const kafka = new Kafka({
 });
 
 const consumer = kafka.consumer({ groupId: 'warehouse-group' });
+
+async function retryPendingEvents() {
+    try {
+        const res = await pool.query(`
+            SELECT id, event_id, topic, payload FROM pending_events 
+            ORDER BY id ASC LIMIT 50
+        `);
+        for (const row of res.rows) {
+            const topic = row.topic;
+            const payload = row.payload;
+            const eventId = row.event_id;
+            
+            try {
+                if (topic === 'shop.catalog') {
+                    await handleCatalogEvent(eventId, payload.type, payload);
+                } else if (topic === 'shop.purchasing') {
+                    await handlePurchasingEvent(eventId, payload.type, payload);
+                } else if (topic === 'shop.work_orders') {
+                    await handleWorkOrderEvent(eventId, payload.type, payload);
+                } else if (topic === 'shop.inspections') {
+                    await handleInspectionEvent(eventId, payload.type, payload);
+                }
+                
+                // If success, delete from pending_events
+                await pool.query(`DELETE FROM pending_events WHERE id = $1`, [row.id]);
+                console.log(`Successfully retried event ${eventId} on ${topic}`);
+            } catch (err) {
+                if (err.code === '23503') {
+                    // Still missing FK dependencies, ignore and keep waiting
+                    await pool.query(`UPDATE pending_events SET attempts = attempts + 1, last_error = $1 WHERE id = $2`, [err.message, row.id]);
+                } else {
+                    console.error(`Error retrying event ${eventId}:`, err);
+                    await pool.query(`UPDATE pending_events SET attempts = attempts + 1, last_error = $1 WHERE id = $2`, [err.message, row.id]);
+                }
+            }
+        }
+    } catch (err) {
+        console.error('Error in retryPendingEvents:', err);
+    }
+}
 
 export async function startConsumer() {
     await consumer.connect();
@@ -31,34 +72,34 @@ export async function startConsumer() {
 
     await consumer.run({
         eachMessage: async ({ topic, partition, message }) => {
-            const payload = JSON.parse(message.value.toString());
-            
-            // Extract the envelope properties
-            const eventId = payload.event_id;
-            const eventType = payload.event_type;
-            const data = payload.data;
-            const occurredAt = payload.occurred_at;
-            
-            // Attach occurred_at into data for handlers to use if needed
-            if (data && typeof data === 'object') {
-                data.occurred_at = occurredAt;
-            }
-
-            console.log(`Received event on ${topic}:`, { eventId, type: eventType });
-
             try {
+                const value = message.value.toString();
+                const payload = JSON.parse(value);
+                const eventId = payload.event_id || payload.eventId;
+                const type = payload.type || payload.event_type;
+                
+                // Extract inner data if envelope
+                let data = payload;
+                if (payload.data && typeof payload.data === 'object') {
+                    data = { ...payload, ...payload.data };
+                }
+
+                console.log(`Received event on ${topic}:`, { eventId, type });
+
                 if (topic === 'shop.catalog') {
-                    await handleCatalogEvent(eventId, eventType, data);
+                    await handleCatalogEvent(eventId, type, data);
                 } else if (topic === 'shop.purchasing') {
-                    await handlePurchasingEvent(eventId, eventType, data);
+                    await handlePurchasingEvent(eventId, type, data);
                 } else if (topic === 'shop.work_orders') {
-                    await handleWorkOrderEvent(eventId, eventType, data);
+                    await handleWorkOrderEvent(eventId, type, data);
                 } else if (topic === 'shop.inspections') {
-                    await handleInspectionEvent(eventId, eventType, data);
+                    await handleInspectionEvent(eventId, type, data);
                 }
             } catch (err) {
-                console.error(`Error processing event ${eventId} on topic ${topic}:`, err);
+                console.error(`Error processing message on ${topic}:`, err);
             }
-        },
+        }
     });
+
+    setInterval(retryPendingEvents, 2000);
 }

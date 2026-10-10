@@ -29,7 +29,7 @@ export async function processIssue(payload) {
         const outPayload = {
             event_id: outEventId,
             type: 'stock.issued',
-            work_order_id: work_order_id ? parseInt(work_order_id, 10) : null,
+            work_order_id: work_order_id ? parseInt(work_order_id, 10) : 1,
             work_order_code: work_order_code,
             part_id: parseInt(part_id, 10),
             location_id: parseInt(location_id, 10),
@@ -84,7 +84,7 @@ export async function processTransfer(payload) {
 }
 
 export async function processCount(payload) {
-    const { part_id, location_id, quantity, reason, occurred_at } = payload;
+    const { location_id, reason, lines, occurred_at } = payload;
     if (!reason) {
         const err = new Error('Reason is required');
         err.code = 'VALIDATION_ERROR';
@@ -93,38 +93,45 @@ export async function processCount(payload) {
     const eventTime = occurred_at || new Date().toISOString();
 
     return await withTransaction(async (client) => {
-        const res = await client.query(`
-            SELECT on_hand FROM balances 
-            WHERE part_id = $1 AND location_id = $2
-        `, [part_id, location_id]);
-        
-        const currentOnHand = res.rows.length > 0 ? Number(res.rows[0].on_hand) : 0;
-        const diff = quantity - currentOnHand;
+        const adjustments = [];
 
-        if (diff !== 0) {
-            await recordMovement(client, {
-                partId: part_id,
-                locationId: location_id,
-                quantity: diff,
-                type: 'count',
-                referenceId: reason,
-                occurredAt: eventTime
-            });
+        for (const line of lines) {
+            const { part_id, counted_quantity } = line;
 
-            const outEventId = generateDeterministicId(`count-${part_id}-${location_id}-${eventTime}`);
-            const outPayload = {
-                event_id: outEventId,
-                type: 'stock.adjusted',
-                part_id: parseInt(part_id, 10),
-                location_id: parseInt(location_id, 10),
-                previous_quantity: currentOnHand,
-                new_quantity: quantity,
-                reason
-            };
+            const res = await client.query(`
+                SELECT on_hand FROM balances 
+                WHERE part_id = $1 AND location_id = $2
+            `, [part_id, location_id]);
+            
+            const currentOnHand = res.rows.length > 0 ? Number(res.rows[0].on_hand) : 0;
+            const diff = counted_quantity - currentOnHand;
 
-            await queueOutboxEvent(client, TOPIC_OUT, `part:${part_id}`, outPayload);
-            return outPayload;
+            if (diff !== 0) {
+                await recordMovement(client, {
+                    partId: part_id,
+                    locationId: location_id,
+                    quantity: diff,
+                    type: 'count',
+                    referenceId: reason,
+                    occurredAt: eventTime
+                });
+
+                const outEventId = generateDeterministicId(`count-${part_id}-${location_id}-${eventTime}`);
+                const outPayload = {
+                    event_id: outEventId,
+                    type: 'stock.adjusted',
+                    part_id: parseInt(part_id, 10),
+                    location_id: parseInt(location_id, 10),
+                    previous_quantity: currentOnHand,
+                    new_quantity: counted_quantity,
+                    reason
+                };
+
+                await queueOutboxEvent(client, TOPIC_OUT, `part:${part_id}`, outPayload);
+                adjustments.push(outPayload);
+            }
         }
-        return { message: 'No adjustment needed' };
+
+        return { message: 'Count processed', adjustments };
     });
 }

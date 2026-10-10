@@ -45,7 +45,7 @@ async function handlePurchaseItemReceived(client, eventId, payload) {
             receipt_event_id: eventId,
             part_number: part_number || 'UNKNOWN',
             description: description || 'UNKNOWN',
-            purchase_line_id: line_id,
+            purchase_line_id: parseInt(line_id, 10),
             quantity: quantity,
             occurred_at: eventTime
         });
@@ -85,7 +85,7 @@ export async function processReceiptAndShortages(client, eventId, data) {
         type: 'stock.received',
         part_id: parseInt(partId, 10),
         location_id: parseInt(locationId, 10),
-        purchase_line_id: line_id,
+        purchase_line_id: parseInt(line_id, 10),
         quantity: quantity,
         unit_cost: unit_price ? String(unit_price) : "0",
         currency: currency || 'MXN',

@@ -41,7 +41,7 @@ export async function processInspectionApproved(client, eventId, payload) {
             quantity = bom.qty_per_unit;
         }
 
-        const partId = line.part_id;
+        const partId = line.part_id || bom.part_id;
         
         let partName = 'UNKNOWN';
         if (partId) {

@@ -26,22 +26,20 @@ app.get('/health', (req, res) => {
 async function main() {
     console.log('Starting Smart Warehouse Backend...');
     
-    // 1. Check DB Connection
-    await testDbConnection();
-
-    // 2. Start HTTP API
+    // Start HTTP API immediately so frontend doesn't get connection refused
     app.listen(port, () => {
         console.log(`API running on http://localhost:${port}`);
     });
 
-    // 3. Start Kafka Publisher (Outbox pattern)
-    await startPublisher();
-
-    // 4. Start Kafka Consumer
-    await startConsumer();
+    try {
+        await testDbConnection();
+        await startPublisher();
+        await startConsumer();
+    } catch (err) {
+        console.error('Error initializing DB/Kafka (server is still running):', err);
+    }
 }
 
-main().catch(err => {
-    console.error('Fatal error during startup:', err);
-    process.exit(1);
-});
+main();
+
+// force restart

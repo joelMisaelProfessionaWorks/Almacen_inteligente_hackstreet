@@ -36,7 +36,7 @@ export async function handleInspectionEvent(eventId, type, payload) {
     } catch (err) {
         if (err.code === '23503') { // Foreign Key violation
             console.log(`[Out of order] Inspection event ${eventId} missing dependency, queuing to pending_events.`);
-            await queuePendingEvent(eventId, 'shop.inspections', payload, err.message);
+            await queuePendingEvent(eventId, 'shop.inspections', type, payload, err.message);
         } else {
             throw err;
         }

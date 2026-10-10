@@ -28,13 +28,13 @@ async function retryPendingEvents() {
             
             try {
                 if (topic === 'shop.catalog') {
-                    await handleCatalogEvent(eventId, payload.type, payload);
+                    await handleCatalogEvent(eventId, payload.__type, payload);
                 } else if (topic === 'shop.purchasing') {
-                    await handlePurchasingEvent(eventId, payload.type, payload);
+                    await handlePurchasingEvent(eventId, payload.__type, payload);
                 } else if (topic === 'shop.work_orders') {
-                    await handleWorkOrderEvent(eventId, payload.type, payload);
+                    await handleWorkOrderEvent(eventId, payload.__type, payload);
                 } else if (topic === 'shop.inspections') {
-                    await handleInspectionEvent(eventId, payload.type, payload);
+                    await handleInspectionEvent(eventId, payload.__type, payload);
                 }
                 
                 // If success, delete from pending_events

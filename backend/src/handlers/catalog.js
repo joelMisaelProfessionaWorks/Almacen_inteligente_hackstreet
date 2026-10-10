@@ -29,7 +29,7 @@ export async function handleCatalogEvent(eventId, type, payload) {
     } catch (err) {
         if (err.code === '23503') { // Foreign Key violation
             console.log(`[Out of order] Catalog event ${eventId} missing dependency, queuing to pending_events.`);
-            await queuePendingEvent(eventId, 'shop.catalog', payload, err.message);
+            await queuePendingEvent(eventId, 'shop.catalog', type, payload, err.message);
         } else {
             throw err;
         }
@@ -79,9 +79,10 @@ async function handleBomUpserted(client, payload) {
     }
 }
 
-export async function queuePendingEvent(eventId, topic, payload, errorMsg) {
+export async function queuePendingEvent(eventId, topic, type, payload, errorMsg) {
     const client = await pool.connect();
     try {
+        const fullPayload = { ...payload, __type: type };
         await client.query(`
             INSERT INTO pending_events (event_id, topic, payload, last_error)
             VALUES ($1, $2, $3, $4)
@@ -89,7 +90,7 @@ export async function queuePendingEvent(eventId, topic, payload, errorMsg) {
                 attempts = pending_events.attempts + 1,
                 last_error = EXCLUDED.last_error,
                 next_attempt_at = NOW() + INTERVAL '5 seconds'
-        `, [eventId, topic, JSON.stringify(payload), errorMsg]);
+        `, [eventId, topic, JSON.stringify(fullPayload), errorMsg]);
     } finally {
         client.release();
     }

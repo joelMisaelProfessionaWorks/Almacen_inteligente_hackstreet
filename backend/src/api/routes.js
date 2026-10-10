@@ -96,7 +96,7 @@ export function setupApiRoutes(app) {
     app.post('/counts', async (req, res) => {
         try {
             const result = await processCount(req.body);
-            res.status(201).json(result);
+            res.status(201).json({ adjustments: (result.adjustments || []).map(a => ({ part_id: a.part_id, delta: a.delta })) });
         } catch (err) {
             if (err.code === 'VALIDATION_ERROR') {
                 return res.status(422).json({ detail: err.message });
@@ -175,6 +175,82 @@ export function setupApiRoutes(app) {
     });
 
     app.get('/work-orders/:code/materials', (req, res) => res.status(501).json({ detail: 'Not implemented' }));
-    app.get('/shortages', (req, res) => res.status(501).json({ detail: 'Not implemented' }));
-    app.get('/reorder-suggestions', (req, res) => res.status(501).json({ detail: 'Not implemented' }));
+    app.get('/shortages', async (req, res) => {
+        try {
+            const { work_order_code, part_id } = req.query;
+            let query = `
+                SELECT s.work_order_id, w.code as work_order_code, s.part_id, p.name, s.missing_quantity, s.inspection_item_id, s.created_at as opened_at
+                FROM shortages s
+                LEFT JOIN work_orders w ON s.work_order_id = w.work_order_id
+                LEFT JOIN parts p ON s.part_id = p.part_id
+                WHERE s.status = 'open'
+            `;
+            const params = [];
+            
+            if (work_order_code) {
+                params.push(work_order_code);
+                query += ` AND w.code = $${params.length}`;
+            }
+            if (part_id) {
+                params.push(parseInt(part_id, 10));
+                query += ` AND s.part_id = $${params.length}`;
+            }
+
+            const result = await pool.query(query, params);
+            
+            res.json({
+                items: result.rows.map(r => ({
+                    work_order_id: parseInt(r.work_order_id, 10),
+                    work_order_code: r.work_order_code || null,
+                    part_id: r.part_id ? parseInt(r.part_id, 10) : null,
+                    name: r.name || 'UNKNOWN',
+                    missing_quantity: r.missing_quantity ? Number(r.missing_quantity) : null,
+                    inspection_item_id: parseInt(r.inspection_item_id, 10),
+                    opened_at: r.opened_at ? r.opened_at.toISOString() : undefined
+                }))
+            });
+        } catch (err) {
+            console.error(err);
+            res.status(500).json({ detail: 'Internal Server Error' });
+        }
+    });
+    app.get('/reorder-suggestions', async (req, res) => {
+        try {
+            const query = `
+                WITH shortages_agg AS (
+                    SELECT part_id, SUM(missing_quantity) as total_missing, array_agg(work_order_id) as wo_ids
+                    FROM shortages
+                    WHERE status = 'open' AND part_id IS NOT NULL
+                    GROUP BY part_id
+                ),
+                balances_agg AS (
+                    SELECT part_id, SUM(on_hand) as total_on_hand, SUM(reserved) as total_reserved
+                    FROM balances
+                    GROUP BY part_id
+                )
+                SELECT s.part_id, s.total_missing, s.wo_ids, COALESCE(b.total_on_hand, 0) as on_hand, COALESCE(b.total_reserved, 0) as reserved
+                FROM shortages_agg s
+                LEFT JOIN balances_agg b ON s.part_id = b.part_id
+            `;
+            const result = await pool.query(query);
+            
+            const items = [];
+            for (const r of result.rows) {
+                const available = Number(r.on_hand) - Number(r.reserved);
+                const missing = Number(r.total_missing);
+                if (available < missing) {
+                    items.push({
+                        part_id: parseInt(r.part_id, 10),
+                        suggested_quantity: missing - (available > 0 ? available : 0),
+                        work_order_ids: r.wo_ids.map(id => parseInt(id, 10))
+                    });
+                }
+            }
+            
+            res.json({ items });
+        } catch (err) {
+            console.error(err);
+            res.status(500).json({ detail: 'Internal Server Error' });
+        }
+    });
 }

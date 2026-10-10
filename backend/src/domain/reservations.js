@@ -26,7 +26,7 @@ export async function processInspectionApproved(client, eventId, payload) {
     if (!items || items.length === 0) return;
 
     for (const line of items) {
-        if (line.action !== 'buy') continue;
+        if (line.action !== 'buy' && line.action !== 'repair') continue;
 
         const bomRes = await client.query(`SELECT part_id, qty_per_unit FROM bom_lines WHERE bom_line_id = $1`, [line.bom_line_id]);
         if (bomRes.rows.length === 0) {

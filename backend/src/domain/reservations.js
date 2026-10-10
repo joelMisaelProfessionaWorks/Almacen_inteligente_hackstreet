@@ -26,7 +26,7 @@ export async function processInspectionApproved(client, eventId, payload) {
     if (!items || items.length === 0) return;
 
     for (const line of items) {
-        if (line.action !== 'buy' && line.action !== 'repair') continue;
+        if (line.action !== 'buy') continue;
 
         const bomRes = await client.query(`SELECT part_id, qty_per_unit FROM bom_lines WHERE bom_line_id = $1`, [line.bom_line_id]);
         if (bomRes.rows.length === 0) {
@@ -51,10 +51,11 @@ export async function processInspectionApproved(client, eventId, payload) {
 
         if (partId === null || partId === undefined) {
             const outEventId = generateDeterministicId(`shortage-${eventId}-${line.bom_line_id}`);
+            const numericQty = quantity !== null && quantity !== undefined ? Number(quantity) : null;
             await client.query(`
                 INSERT INTO shortages (work_order_id, missing_quantity, inspection_item_id) 
                 VALUES ($1, $2, $3)
-            `, [work_order_id, quantity, line.inspection_item_id]);
+            `, [work_order_id, numericQty, line.inspection_item_id]);
             
             await queueOutboxEvent(client, 'inventory.events', wo.code, {
                 event_id: outEventId,
@@ -62,7 +63,7 @@ export async function processInspectionApproved(client, eventId, payload) {
                 work_order_id: parseInt(work_order_id, 10),
                 part_id: null,
                 name: partName,
-                missing_quantity: quantity,
+                missing_quantity: numericQty,
                 inspection_item_id: parseInt(line.inspection_item_id, 10),
                 occurred_at: eventTime
             });
@@ -148,7 +149,7 @@ export async function processInspectionApproved(client, eventId, payload) {
                     work_order_id: parseInt(work_order_id, 10),
                     part_id: parseInt(partId, 10),
                     name: partName,
-                    missing_quantity: needed,
+                    missing_quantity: Number(needed),
                     inspection_item_id: parseInt(line.inspection_item_id, 10),
                     occurred_at: eventTime
                 });

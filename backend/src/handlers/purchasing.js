@@ -27,6 +27,10 @@ async function handlePurchaseItemReceived(client, eventId, payload) {
     if (purpose === 'customer_order') return;
 
     const sku_norm = part_number ? part_number.trim().toUpperCase().replace(/\s+/g, ' ') : '';
+    
+    // Hackathon race condition workaround: wait 500ms for part.upserted to be processed
+    await new Promise(resolve => setTimeout(resolve, 500));
+
     const partsRes = await client.query(`SELECT part_id FROM parts WHERE sku_norm = $1`, [sku_norm]);
 
     if (partsRes.rows.length !== 1) {

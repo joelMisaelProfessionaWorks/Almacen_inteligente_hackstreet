@@ -395,6 +395,7 @@ function App() {
   })
   const [order, setOrder] = useState('')
   const [materials, setMaterials] = useState(null)
+  const [workOrders, setWorkOrders] = useState([])
 
   const locationSuggestions = useMemo(() => locations, [locations])
 
@@ -515,7 +516,18 @@ function App() {
       }
     }
 
+    const loadWorkOrders = async () => {
+      try {
+        const payload = await request('/work-orders')
+        if (!active) return
+        setWorkOrders(asArray(payload))
+      } catch (err) {
+        console.error('Error cargando work orders:', err)
+      }
+    }
+
     void loadLocations()
+    void loadWorkOrders()
     return () => {
       active = false
     }
@@ -794,7 +806,12 @@ function App() {
         <section className="card">
           <h2>Materiales por orden</h2>
           <form className="lookup" onSubmit={materialsSubmit}>
-            <input value={order} onChange={(event) => setOrder(event.target.value.toUpperCase())} placeholder="Código de orden" />
+            <select value={order} onChange={(event) => setOrder(event.target.value)}>
+              <option value="">Selecciona una orden...</option>
+              {workOrders.map((wo) => (
+                <option key={wo.work_order_id} value={wo.code}>{wo.code}</option>
+              ))}
+            </select>
             <button className="primary" disabled={busy}>Consultar</button>
           </form>
           {materials && (

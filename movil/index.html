@@ -5,6 +5,14 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>movil</title>
+    <script>
+      window.addEventListener('error', function(event) {
+        document.body.innerHTML += '<div style="color:red;font-size:20px;padding:20px;z-index:9999;position:absolute;top:0;background:white;">ERROR: ' + event.message + '</div>';
+      });
+      window.addEventListener('unhandledrejection', function(event) {
+        document.body.innerHTML += '<div style="color:red;font-size:20px;padding:20px;z-index:9999;position:absolute;top:0;background:white;">PROMISE ERROR: ' + event.reason + '</div>';
+      });
+    </script>
   </head>
   <body>
     <div id="root"></div>

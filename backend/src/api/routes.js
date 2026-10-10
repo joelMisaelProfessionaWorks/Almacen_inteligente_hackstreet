@@ -1,116 +1,124 @@
 import { pool, withTransaction } from '../db.js';
-import { processCount, processIssue, processTransfer } from '../domain/inventory.js';
+import { processIssue, processTransfer, processCount } from '../domain/inventory.js';
+import { generateDeterministicId, queueOutboxEvent } from '../domain/events.js';
 import { processReceiptAndShortages } from '../handlers/purchasing.js';
-
-function normalizeSku(value) {
-    return String(value || '')
-        .trim()
-        .toUpperCase()
-        .replace(/\s+/g, ' ');
-}
-
-function mapLocationRow(row) {
-    return {
-        kind: 'location',
-        location_id: Number(row.location_id),
-        code: row.code,
-        name: row.name,
-        display: `${row.code}${row.name ? ` · ${row.name}` : ''}`,
-    };
-}
-
-function mapPartRow(row) {
-    const sku = row.sku || (row.part_id ? `P-${row.part_id}` : '');
-    return {
-        kind: 'part',
-        part_id: Number(row.part_id),
-        sku: sku,
-        name: row.name,
-        display: `${sku}${row.name ? ` · ${row.name}` : ''}`,
-    };
-}
+import { getRecommendations, getTTS } from './ai.js';
 
 export function setupApiRoutes(app) {
-    app.get('/locations', async (req, res) => {
-        try {
-            const result = await pool.query(`
-                SELECT location_id, code, name
-                FROM locations
-                ORDER BY code ASC
-            `);
 
-            res.json({ items: result.rows.map(mapLocationRow) });
+    app.get('/work-orders', async (req, res) => {
+        try {
+            // Fetch all work orders and determine if they have shortages
+            const woRes = await pool.query(`
+                SELECT w.work_order_id, w.code, w.status,
+                (SELECT COUNT(*) FROM shortages s WHERE s.work_order_id = w.work_order_id AND s.status = 'open') as shortage_count
+                FROM work_orders w
+                ORDER BY shortage_count DESC, w.code ASC
+                LIMIT 100
+            `);
+            
+            // Get all missing parts for pending orders (to show suppliers/AI info)
+            const shortagesRes = await pool.query(`
+                SELECT s.work_order_id, s.part_id, p.name, p.sku, s.missing_quantity
+                FROM shortages s
+                JOIN parts p ON s.part_id = p.part_id
+                WHERE s.status = 'open'
+            `);
+            
+            const orders = woRes.rows.map(w => {
+                return {
+                    id: w.work_order_id,
+                    code: w.code,
+                    status: w.status,
+                    pending: w.shortage_count > 0,
+                    missing_parts: shortagesRes.rows.filter(s => s.work_order_id === w.work_order_id).map(s => ({
+                        part_id: s.part_id,
+                        name: s.name,
+                        sku: s.sku,
+                        missing: Number(s.missing_quantity)
+                    }))
+                };
+            });
+            
+            res.json({ items: orders });
+        } catch (err) {
+            console.error(err);
+            res.status(500).json({ detail: err.message });
+        }
+    });
+
+    // --- Rutas extra (no son parte del contrato, usadas por el frontend) ---
+    app.get('/parts', async (req, res) => {
+        try {
+            const search = String(req.query.search || '').trim();
+            let result;
+            if (!search) {
+                result = await pool.query('SELECT part_id, sku, name, description FROM parts ORDER BY name');
+            } else {
+                result = await pool.query(
+                    `SELECT part_id, sku, name, description FROM parts
+                     WHERE sku ILIKE $1 OR sku_norm ILIKE $1 OR name ILIKE $1 OR CAST(part_id AS TEXT) = $2
+                     ORDER BY name LIMIT 25`,
+                    ['%' + search + '%', search]
+                );
+            }
+            res.json({ items: result.rows.map(r => ({ ...r, part_id: parseInt(r.part_id, 10) })) });
         } catch (err) {
             console.error(err);
             res.status(500).json({ detail: 'Internal Server Error' });
         }
     });
 
+    app.get('/locations', async (req, res) => {
+        try {
+            const result = await pool.query(`SELECT location_id, code, name FROM locations ORDER BY location_id`);
+            res.json({ items: result.rows.map(r => ({ ...r, location_id: parseInt(r.location_id, 10), kind: 'location', display: `${r.code}${r.name ? ` · ${r.name}` : ''}` })) });
+        } catch (err) {
+            console.error(err);
+            res.status(500).json({ detail: 'Internal Server Error' });
+        }
+    });
+
+    // Resuelve un codigo escaneado: ubicacion (por code) o pieza (sku / part_id)
     app.get('/scan/:code', async (req, res) => {
         try {
-            const rawCode = String(req.params.code || '').trim();
-            const normalizedSku = normalizeSku(rawCode);
-            const candidates = [];
-
-            const locationByCode = await pool.query(`
-                SELECT location_id, code, name
-                FROM locations
-                WHERE code = $1
-            `, [rawCode]);
-            candidates.push(...locationByCode.rows.map(mapLocationRow));
-
-            const numericLocationId = Number(rawCode);
-            if (Number.isInteger(numericLocationId) && String(numericLocationId) === rawCode) {
-                const locationById = await pool.query(`
-                    SELECT location_id, code, name
-                    FROM locations
-                    WHERE location_id = $1
-                `, [numericLocationId]);
-                candidates.push(...locationById.rows.map(mapLocationRow));
+            const code = String(req.params.code).trim();
+            const loc = await pool.query(
+                `SELECT location_id, code, name FROM locations WHERE UPPER(code) = UPPER($1)`, [code]);
+            if (loc.rows.length > 0) {
+                const items = loc.rows.map(r => ({ ...r, location_id: parseInt(r.location_id, 10), kind: 'location', display: `${r.code}${r.name ? ` · ${r.name}` : ''}` }));
+                return res.json({ type: 'location', items, location: items[0], options: items });
             }
-
-            const partsBySku = await pool.query(`
-                SELECT part_id, sku, name
-                FROM parts
-                WHERE sku = $1 OR sku_norm = $2
-                ORDER BY part_id ASC
-            `, [rawCode, normalizedSku]);
-            candidates.push(...partsBySku.rows.map(mapPartRow));
-
-            const pMatch = /^P-(\d+)$/i.exec(rawCode);
-            if (pMatch) {
-                const partById = await pool.query(`
-                    SELECT part_id, sku, name
-                    FROM parts
-                    WHERE part_id = $1
-                `, [Number(pMatch[1])]);
-                candidates.push(...partById.rows.map(mapPartRow));
+            const parts = await pool.query(
+                `SELECT part_id, sku, name, description FROM parts
+                 WHERE sku_norm = UPPER(TRIM($1)) OR CAST(part_id AS TEXT) = $1 ORDER BY part_id`, [code]);
+            if (parts.rows.length > 0) {
+                const items = parts.rows.map(r => ({ ...r, part_id: parseInt(r.part_id, 10), kind: 'part', display: `${r.sku}${r.name ? ` · ${r.name}` : ''}` }));
+                return res.json({ type: 'part', items, part: items[0], options: items, kind: items.length > 1 ? 'ambiguous' : 'part' });
             }
+            res.status(404).json({ detail: 'Codigo no reconocido' });
+        } catch (err) {
+            console.error(err);
+            res.status(500).json({ detail: 'Internal Server Error' });
+        }
+    });
 
-            if (candidates.length === 0) {
-                return res.status(404).json({ detail: 'No se encontró coincidencia para el código escaneado' });
-            }
-
-            const unique = [];
-            const seen = new Set();
-            for (const item of candidates) {
-                const key = `${item.kind}:${item.location_id ?? item.part_id}`;
-                if (seen.has(key)) continue;
-                seen.add(key);
-                unique.push(item);
-            }
-
-            const locations = unique.filter((item) => item.kind === 'location');
-            const parts = unique.filter((item) => item.kind === 'part');
-
-            if (locations.length === 1 && parts.length === 0) {
-                return res.json({ location: locations[0] });
-            }
-            if (parts.length === 1 && locations.length === 0) {
-                return res.json({ part: parts[0] });
-            }
-
-            return res.json({ kind: 'ambiguous', options: unique });
+    // Saldo por pieza y ubicacion
+    app.get('/inventory', async (req, res) => {
+        try {
+            const result = await pool.query(`
+                SELECT b.part_id, p.sku, p.name, b.location_id, l.code AS location_code,
+                       b.on_hand, b.reserved, (b.on_hand - b.reserved) AS available
+                FROM balances b
+                JOIN parts p ON p.part_id = b.part_id
+                LEFT JOIN locations l ON l.location_id = b.location_id
+                ORDER BY b.part_id, b.location_id
+            `);
+            res.json({ items: result.rows.map(r => ({
+                part_id: parseInt(r.part_id, 10), sku: r.sku, name: r.name,
+                location_id: parseInt(r.location_id, 10), location_code: r.location_code,
+                on_hand: Number(r.on_hand), reserved: Number(r.reserved), available: Number(r.available)
+            })) });
         } catch (err) {
             console.error(err);
             res.status(500).json({ detail: 'Internal Server Error' });
@@ -287,15 +295,6 @@ export function setupApiRoutes(app) {
             res.status(500).json({ detail: 'Internal Server Error' });
         }
     });
-    app.get('/work-orders', async (req, res) => {
-        try {
-            const result = await pool.query(`SELECT work_order_id, code, status FROM work_orders ORDER BY code ASC`);
-            res.json(result.rows);
-        } catch (err) {
-            console.error(err);
-            res.status(500).json({ detail: 'Internal Server Error' });
-        }
-    });
 
     app.get('/work-orders/:code/materials', async (req, res) => {
         try {
@@ -434,4 +433,64 @@ export function setupApiRoutes(app) {
             res.status(500).json({ detail: 'Internal Server Error' });
         }
     });
+
+    app.get('/recommendations', async (req, res) => {
+        try {
+            const recommendation = await getRecommendations(pool, process.env.GEMINI_API_KEY, req.query.q);
+            res.json({ recommendation });
+        } catch (err) {
+            res.status(500).json({ detail: err.message });
+        }
+    });
+
+    app.post('/tts', async (req, res) => {
+        try {
+            const { text } = req.body;
+            if (!text) return res.status(400).json({ detail: 'Missing text' });
+            const audioBuffer = await getTTS(text, process.env.ELEVENLABS_API_KEY);
+            res.set('Content-Type', 'audio/mpeg');
+            res.send(audioBuffer);
+        } catch (err) {
+            res.status(500).json({ detail: err.message });
+        }
+    });
+
+    // --- Endpoint para el mapa de proveedores (Huesillos vs Motores) ---
+    app.get('/locations-map', async (req, res) => {
+        try {
+            const result = await pool.query(`
+                SELECT location_id, code, name
+                FROM locations
+                ORDER BY code ASC
+            `);
+            
+            // Coordenadas simuladas y clasificación por tipo de pieza (sin alterar la base de datos)
+            const supplierData = [
+                { lat: 25.4260, lng: -101.0000, city: 'Saltillo', type: 'huesillos', label: 'Proveedor de Huesillos' },
+                { lat: 25.6866, lng: -100.3161, city: 'Monterrey', type: 'motores', label: 'Proveedor de Motores' },
+                { lat: 22.1565, lng: -100.9855, city: 'San Luis Potosí', type: 'huesillos', label: 'Distribuidor de Huesillos' },
+                { lat: 21.1619, lng: -101.6830, city: 'León', type: 'motores', label: 'Fabricante de Motores' }
+            ];
+
+            const items = result.rows.map((row, index) => {
+                const data = supplierData[index % supplierData.length];
+                return {
+                    location_id: Number(row.location_id),
+                    code: row.code,
+                    name: row.name,
+                    latitude: data.lat,
+                    longitude: data.lng,
+                    city: data.city,
+                    partType: data.type, // 'huesillos' o 'motores'
+                    categoryLabel: data.label
+                };
+            });
+
+            res.json({ items });
+        } catch (err) {
+            console.error(err);
+            res.status(500).json({ detail: 'Internal Server Error' });
+        }
+    });
+
 }

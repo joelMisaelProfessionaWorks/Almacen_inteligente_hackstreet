@@ -1,3 +1,5 @@
+process.on('uncaughtException', (err) => { console.error('Uncaught Exception:', err); });
+process.on('unhandledRejection', (reason) => { console.error('Unhandled Rejection:', reason); });
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';

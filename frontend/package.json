@@ -10,6 +10,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "browserslist": "^4.29.3",
+    "caniuse-lite": "^1.0.30001815",
+    "leaflet": "^1.9.4",
     "lucide-react": "^1.54.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",

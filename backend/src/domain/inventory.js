@@ -56,7 +56,7 @@ export async function processIssue(payload) {
             locationId: location_id,
             quantity: -Math.abs(quantity),
             type: 'issue',
-            referenceId: work_order_code,
+            referenceId: work_order_code || 'manual',
             occurredAt: eventTime
         });
 
@@ -64,7 +64,7 @@ export async function processIssue(payload) {
             event_id: outEventId,
             type: 'stock.issued',
             work_order_id: work_order_id ? parseInt(work_order_id, 10) : 1,
-            work_order_code: work_order_code,
+            work_order_code: work_order_code || null,
             part_id: parseInt(part_id, 10),
             location_id: parseInt(location_id, 10),
             quantity: Math.abs(quantity),
@@ -72,7 +72,7 @@ export async function processIssue(payload) {
         };
 
         // Llave (key): código de la orden
-        await queueOutboxEvent(client, TOPIC_OUT, work_order_code, outPayload);
+        await queueOutboxEvent(client, TOPIC_OUT, work_order_code || ('part:' + part_id), outPayload);
         return { message: 'Issued successfully' };
     });
 }

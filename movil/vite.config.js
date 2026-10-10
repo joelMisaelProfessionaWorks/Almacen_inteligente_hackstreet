@@ -1,4 +1,3 @@
-import basicSsl from '@vitejs/plugin-basic-ssl'
 import react from '@vitejs/plugin-react'
 import { defineConfig, loadEnv } from 'vite'
 
@@ -19,8 +18,8 @@ export default defineConfig(({ mode }) => {
 
   return {
     // basicSsl: certificado autofirmado -> getUserMedia (cámara) funciona en el celular.
-    plugins: [react(), basicSsl()],
+    plugins: [react()],
     server: { host: true, port: 5173, strictPort: true, allowedHosts: true, proxy },
-    preview: { host: true, port: 4173, strictPort: true, allowedHosts: true, proxy },
+    preview: { host: true, port: 5173, strictPort: true, allowedHosts: true, proxy },
   }
 })

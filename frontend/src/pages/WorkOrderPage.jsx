@@ -1,90 +1,134 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { ClipboardList, AlertTriangle, PackageCheck, Bot } from 'lucide-react';
 import { fetchApi } from '../api';
+import { PageHeader, HelpBox, Card, Empty, Spinner, Badge, btnPrimary } from '../components/ui';
+import LocationsMap from './LocationsMap';
 
 export default function WorkOrderPage() {
-  const [code, setCode] = useState('');
-  const [materials, setMaterials] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
+  const [orders, setOrders] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [aiLoading, setAiLoading] = useState(null); // id of the order being analyzed
+  const [aiData, setAiData] = useState({});
 
-  const handleSearch = async (e) => {
-    e.preventDefault();
-    if (!code) return;
-    setLoading(true);
-    setError(null);
+  useEffect(() => {
+    fetchApi('/work-orders')
+      .then((d) => setOrders(d.items || []))
+      .catch((e) => console.error(e))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const analyzeOrder = async (orderId, missingParts) => {
+    setAiLoading(orderId);
     try {
-      const data = await fetchApi(`/work-orders/${encodeURIComponent(code)}/materials`);
-      setMaterials(data);
+      const partsText = missingParts.map(p => `${p.name} (faltan ${p.missing})`).join(', ');
+      const res = await fetchApi(`/recommendations?q=${encodeURIComponent("Faltan estas piezas para la orden " + orderId + ": " + partsText + ". ¿Qué recomiendas sobre tiempos de entrega, proveedores o reparación interna para evitar sobreinventarios?")}`);
+      
+      let parsed = typeof res.recommendation === 'string' 
+        ? JSON.parse(res.recommendation.replace(/^\`\`\`(?:json)?\\n?/gi, '').replace(/\\n?\`\`\`$/g, '').trim()) 
+        : res.recommendation;
+      
+      setAiData(prev => ({ ...prev, [orderId]: parsed }));
     } catch (err) {
-      setError(err.message);
-      setMaterials(null);
+      console.error(err);
     } finally {
-      setLoading(false);
+      setAiLoading(null);
     }
   };
 
+  if (loading) return <Spinner />;
+
+  const pendingOrders = orders.filter(o => o.pending);
+  const readyOrders = orders.filter(o => !o.pending);
+
   return (
     <div className="space-y-6">
-      <div className="bg-white p-6 rounded-xl shadow-md">
-        <h2 className="text-2xl font-bold text-gray-800 mb-4">Consulta de Orden de Trabajo</h2>
-        <form onSubmit={handleSearch} className="flex gap-2 max-w-md">
-          <input
-            type="text"
-            placeholder="Código de la Orden"
-            className="flex-1 p-3 border rounded-lg bg-gray-50 focus:ring-2 focus:ring-blue-500"
-            value={code}
-            onChange={(e) => setCode(e.target.value)}
-          />
-          <button type="submit" className="bg-blue-600 text-white px-6 py-3 rounded-lg font-medium hover:bg-blue-700">
-            Buscar
-          </button>
-        </form>
-        {error && <p className="mt-4 text-red-600 bg-red-50 p-3 rounded">{error}</p>}
+      <PageHeader icon={ClipboardList} title="Órdenes de Trabajo y Compras" subtitle="Gestión de órdenes pendientes y disponibles" />
+
+      <HelpBox
+        steps={[
+          'Las órdenes "Pendientes" necesitan material que no está disponible.',
+          'Usa el Asistente IA para obtener información sobre proveedores, tiempos de entrega o posibilidad de reparación interna.',
+          'Las órdenes "Disponibles" tienen todo el material listo para ser surtido o transferido en el Piso.',
+        ]}
+      />
+
+      <LocationsMap />
+        <div className="space-y-4">
+        <h2 className="text-xl font-bold flex items-center gap-2 text-rose-700">
+          <AlertTriangle className="h-6 w-6" /> Órdenes Pendientes (Faltan piezas)
+        </h2>
+        {pendingOrders.length === 0 ? (
+          <p className="text-slate-500 italic">No hay órdenes pendientes.</p>
+        ) : (
+          <div className="grid gap-4">
+            {pendingOrders.map(o => (
+              <Card key={o.id} className="border-l-4 border-rose-500">
+                <div className="flex justify-between items-start mb-3">
+                  <div>
+                    <h3 className="font-bold text-lg">{o.code}</h3>
+                    <Badge color="amber">Requiere compras o reparación</Badge>
+                  </div>
+                  <button 
+                    onClick={() => analyzeOrder(o.id, o.missing_parts)}
+                    disabled={aiLoading === o.id}
+                    className="flex items-center gap-2 bg-violet-100 hover:bg-violet-200 text-violet-700 px-3 py-1.5 rounded-lg text-sm font-medium transition"
+                  >
+                    {aiLoading === o.id ? <div className="w-4 h-4 border-2 border-violet-600 border-t-transparent rounded-full animate-spin" /> : <Bot className="w-4 h-4" />}
+                    Analizar Proveedores / Reparación
+                  </button>
+                </div>
+                
+                <div className="bg-slate-50 p-3 rounded-lg mb-3">
+                  <span className="text-sm font-semibold text-slate-700 block mb-2">Piezas Faltantes:</span>
+                  <ul className="text-sm space-y-1">
+                    {o.missing_parts.map((p, idx) => (
+                      <li key={idx} className="flex justify-between text-rose-600">
+                        <span>{p.name} {p.sku ? `(${p.sku})` : ''}</span>
+                        <span className="font-bold">Faltan: {p.missing}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+
+                {aiData[o.id] && (
+                  <div className="bg-violet-50 p-4 rounded-xl border border-violet-100">
+                    <h4 className="font-bold text-violet-800 flex items-center gap-2 mb-2">
+                      <Bot className="w-4 h-4" /> Recomendación de la IA
+                    </h4>
+                    <p className="text-sm text-violet-700 font-medium mb-3">{aiData[o.id].analisis}</p>
+                    <div className="space-y-2">
+                      {(aiData[o.id].recomendaciones || []).map((r, i) => (
+                        <div key={i} className="bg-white p-3 rounded shadow-sm text-sm">
+                          <strong className="text-violet-900 block">{r.titulo}</strong>
+                          <span className="text-slate-600">{r.descripcion}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </Card>
+            ))}
+          </div>
+        )}
       </div>
 
-      {loading && <div className="p-8 text-center text-gray-500">Cargando materiales...</div>}
-
-      {materials && !loading && (
-        <div className="bg-white p-6 rounded-xl shadow-md">
-          <h3 className="text-xl font-semibold text-gray-800 mb-6">Materiales para {materials.code}</h3>
-
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Línea BOM</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Pieza</th>
-                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Requerido</th>
-                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Reservado</th>
-                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Entregado</th>
-                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Faltante</th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {materials.lines.length === 0 && (
-                  <tr>
-                    <td colSpan="6" className="px-4 py-4 text-center text-gray-500">
-                      No hay materiales requeridos
-                    </td>
-                  </tr>
-                )}
-                {materials.lines.map((m, idx) => (
-                  <tr key={idx} className={m.missing > 0 ? 'bg-red-50' : ''}>
-                    <td className="px-4 py-3 text-sm text-gray-500">{m.bom_line_id}</td>
-                    <td className="px-4 py-3 text-sm font-medium text-gray-900">
-                      {m.part_id ? `${m.part_id} - ${m.name}` : m.name}
-                    </td>
-                    <td className="px-4 py-3 text-sm text-right font-medium">{m.required ?? '-'}</td>
-                    <td className="px-4 py-3 text-sm text-right text-blue-600">{m.reserved}</td>
-                    <td className="px-4 py-3 text-sm text-right text-green-600">{m.issued}</td>
-                    <td className="px-4 py-3 text-sm text-right font-bold text-red-600">{m.missing ?? 0}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+      <div className="space-y-4 mt-8">
+        <h2 className="text-xl font-bold flex items-center gap-2 text-emerald-700">
+          <PackageCheck className="h-6 w-6" /> Órdenes Disponibles (Listas para surtir)
+        </h2>
+        {readyOrders.length === 0 ? (
+          <p className="text-slate-500 italic">No hay órdenes listas en este momento.</p>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {readyOrders.map(o => (
+              <Card key={o.id} className="border-l-4 border-emerald-500">
+                <h3 className="font-bold text-lg">{o.code}</h3>
+                <Badge color="green" className="mt-2">Lista para Piso</Badge>
+              </Card>
+            ))}
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }

@@ -1,108 +1,133 @@
 import { useState } from 'react';
+import { BookOpen, Search } from 'lucide-react';
 import { fetchApi } from '../api';
+import { PageHeader, HelpBox, Card, Empty, Spinner, Badge, useToast, inputCls, btnPrimary } from '../components/ui';
 
 export default function KardexPage() {
-  const [partId, setPartId] = useState('');
+  const toast = useToast();
+  const [q, setQ] = useState('');
+  const [options, setOptions] = useState([]);
+  const [part, setPart] = useState(null);
   const [ledger, setLedger] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
 
-  const handleSearch = async (e) => {
-    e.preventDefault();
-    if (!partId) return;
+  const openPart = async (p) => {
+    setPart(p);
+    setOptions([]);
     setLoading(true);
-    setError(null);
     try {
-      const data = await fetchApi(`/parts/${partId}/ledger`);
-      setLedger(data);
+      setLedger(await fetchApi(`/parts/${p.part_id}/ledger`));
     } catch (err) {
-      setError(err.message);
+      toast('error', err.message);
       setLedger(null);
     } finally {
       setLoading(false);
     }
   };
 
-  return (
-    <div className="space-y-6">
-      <div className="bg-white p-6 rounded-xl shadow-md">
-        <h2 className="text-2xl font-bold text-gray-800 mb-4">Kardex (Libro Mayor)</h2>
-        <form onSubmit={handleSearch} className="flex gap-2 max-w-md">
-          <input
-            type="number"
-            placeholder="ID de la Pieza"
-            className="flex-1 p-3 border rounded-lg bg-gray-50 focus:ring-2 focus:ring-blue-500"
-            value={partId}
-            onChange={(e) => setPartId(e.target.value)}
-          />
-          <button type="submit" className="bg-blue-600 text-white px-6 py-3 rounded-lg font-medium hover:bg-blue-700">
-            Buscar
-          </button>
-        </form>
-        {error && <p className="mt-4 text-red-600 bg-red-50 p-3 rounded">{error}</p>}
-      </div>
+  const search = async (e) => {
+    e.preventDefault();
+    const v = q.trim();
+    if (!v) return;
+    setLedger(null);
+    setPart(null);
+    try {
+      const r = await fetchApi(`/parts?search=${encodeURIComponent(v)}`);
+      if (r.items.length === 0) toast('info', 'No se encontró ninguna pieza con ese texto.');
+      else if (r.items.length === 1) openPart(r.items[0]);
+      else setOptions(r.items);
+    } catch (err) {
+      toast('error', err.message);
+    }
+  };
 
-      {loading && <div className="p-8 text-center text-gray-500">Cargando kardex...</div>}
+  const entries = ledger?.entries || [];
+  const current = entries.length ? entries[0].balance : 0;
+  const totalIn = entries.filter((e) => e.quantity > 0).reduce((a, e) => a + e.quantity, 0);
+  const totalOut = entries.filter((e) => e.quantity < 0).reduce((a, e) => a + e.quantity, 0);
+
+  const typeLabel = {
+    receipt: ['Entrada', 'green'],
+    issue: ['Salida', 'red'],
+    transfer_in: ['Transfer. entrada', 'blue'],
+    transfer_out: ['Transfer. salida', 'amber'],
+    adjustment: ['Ajuste', 'amber'],
+    count: ['Conteo', 'amber'],
+  };
+
+  return (
+    <div>
+      <PageHeader icon={BookOpen} title="Kardex" subtitle="Historial completo de movimientos de una pieza con saldo corrido" />
+
+      <HelpBox
+        steps={[
+          'Escribe el nombre, SKU o ID de la pieza y presiona Buscar.',
+          'Si hay varias coincidencias, toca la que necesitas.',
+          'La tabla muestra los movimientos del más reciente al más antiguo; "Saldo" es la existencia después de cada movimiento.',
+        ]}
+      />
+
+      <Card accent="indigo" className="mb-6">
+        <form onSubmit={search} className="flex gap-2">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-slate-400" />
+            <input className={inputCls + ' pl-10'} placeholder="Nombre, SKU o ID de la pieza" value={q} onChange={(e) => setQ(e.target.value)} />
+          </div>
+          <button className={btnPrimary}>Buscar</button>
+        </form>
+        {options.length > 0 && (
+          <div className="mt-3 space-y-2 max-h-72 overflow-auto">
+            <p className="text-xs text-slate-500">{options.length} coincidencias — elige una:</p>
+            {options.map((p) => (
+              <button key={p.part_id} onClick={() => openPart(p)} className="w-full text-left p-3 border rounded-xl hover:bg-indigo-50 hover:border-indigo-300">
+                <div className="font-semibold">{p.name}</div>
+                <div className="text-xs text-slate-500">ID {p.part_id}{p.sku ? ` · SKU ${p.sku}` : ''}</div>
+              </button>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      {loading && <Spinner text="Cargando movimientos…" />}
+      {!loading && !ledger && options.length === 0 && <Empty icon={BookOpen} text="Busca una pieza para ver su kardex." />}
 
       {ledger && !loading && (
-        <div className="bg-white p-6 rounded-xl shadow-md">
-          <h3 className="text-xl font-semibold text-gray-800 mb-4">Movimientos de la Pieza {ledger.part_id}</h3>
-
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Fecha</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Ubicación</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Tipo</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Referencia</th>
-                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Cantidad</th>
-                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Saldo</th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {ledger.entries.length === 0 && (
-                  <tr>
-                    <td colSpan="6" className="px-4 py-4 text-center text-gray-500">
-                      Sin movimientos
-                    </td>
-                  </tr>
-                )}
-                {ledger.entries.map((m) => (
-                  <tr key={m.movement_id} className="hover:bg-gray-50">
-                    <td className="px-4 py-3 text-sm text-gray-500">{new Date(m.occurred_at).toLocaleString()}</td>
-                    <td className="px-4 py-3 text-sm font-medium text-gray-900">{m.location_id}</td>
-                    <td className="px-4 py-3 text-sm">
-                      <span
-                        className={
-                          m.quantity > 0
-                            ? 'px-2 py-1 rounded text-xs font-medium bg-green-100 text-green-800'
-                            : 'px-2 py-1 rounded text-xs font-medium bg-red-100 text-red-800'
-                        }
-                      >
-                        {m.type}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-sm text-gray-500 max-w-xs truncate" title={m.reference_id}>
-                      {m.reference_id}
-                    </td>
-                    <td
-                      className={
-                        m.quantity > 0
-                          ? 'px-4 py-3 text-sm text-right font-bold text-green-600'
-                          : 'px-4 py-3 text-sm text-right font-bold text-red-600'
-                      }
-                    >
-                      {m.quantity > 0 ? '+' : ''}
-                      {m.quantity}
-                    </td>
-                    <td className="px-4 py-3 text-sm text-right font-bold text-gray-900">{m.balance}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        <>
+          <div className="grid grid-cols-3 gap-3 mb-4">
+            <div className="bg-white rounded-2xl p-4 border shadow-sm"><div className="text-xs text-slate-500">Saldo actual</div><div className="text-3xl font-bold text-indigo-700">{current}</div></div>
+            <div className="bg-white rounded-2xl p-4 border shadow-sm"><div className="text-xs text-slate-500">Total entradas</div><div className="text-3xl font-bold text-emerald-600">+{totalIn}</div></div>
+            <div className="bg-white rounded-2xl p-4 border shadow-sm"><div className="text-xs text-slate-500">Total salidas</div><div className="text-3xl font-bold text-rose-600">{totalOut}</div></div>
           </div>
-        </div>
+
+          <Card title={part ? `${part.name} (ID ${part.part_id})` : `Pieza ${ledger.part_id}`} accent="indigo">
+            {entries.length === 0 ? <Empty text="Esta pieza aún no tiene movimientos." /> : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-xs uppercase text-slate-500 border-b">
+                      <th className="py-2 pr-3">Fecha</th><th className="pr-3">Tipo</th><th className="pr-3">Ubicación</th>
+                      <th className="pr-3 text-right">Cantidad</th><th className="text-right">Saldo</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {entries.map((m) => {
+                      const [label, color] = typeLabel[m.type] || [m.type, 'slate'];
+                      return (
+                        <tr key={m.movement_id} className="border-b last:border-0 hover:bg-slate-50">
+                          <td className="py-2 pr-3 text-slate-600">{new Date(m.occurred_at).toLocaleString()}</td>
+                          <td className="pr-3"><Badge color={color}>{label}</Badge></td>
+                          <td className="pr-3"><Badge>{m.location_id}</Badge></td>
+                          <td className={`pr-3 text-right font-bold ${m.quantity > 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{m.quantity > 0 ? '+' : ''}{m.quantity}</td>
+                          <td className="text-right font-bold text-slate-800">{m.balance}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Card>
+        </>
       )}
     </div>
   );

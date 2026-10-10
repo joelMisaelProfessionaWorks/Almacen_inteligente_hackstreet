@@ -29,7 +29,7 @@ async function handlePurchaseItemReceived(client, eventId, payload) {
     const sku_norm = part_number ? part_number.trim().toUpperCase().replace(/\s+/g, ' ') : '';
     
     // Hackathon race condition workaround: wait 50ms for part.upserted to be processed
-    await new Promise(resolve => setTimeout(resolve, 500));
+    await new Promise(resolve => setTimeout(resolve, 50));
 
     const partsRes = await client.query(`SELECT part_id FROM parts WHERE sku_norm = $1`, [sku_norm]);
     console.log(`[DEBUG-SKU] Event ${eventId} sku_norm = ${sku_norm} count = ${partsRes.rows.length}`);
@@ -46,6 +46,7 @@ async function handlePurchaseItemReceived(client, eventId, payload) {
         await queueOutboxEvent(client, 'inventory.events', `purchase_line:${line_id}`, {
             event_id: outEventId,
             type: 'stock.unmatched_receipt',
+              purchase_line_id: parseInt(line_id, 10),
             receipt_event_id: eventId,
             part_number: part_number || 'UNKNOWN',
             description: description || 'UNKNOWN',

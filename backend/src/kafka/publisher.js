@@ -21,7 +21,7 @@ export async function startPublisher() {
         } catch (err) {
             console.error('Error in outbox publisher:', err);
         }
-    }, 1000); 
+    }, 100); 
 }
 
 async function publishPendingEvents() {

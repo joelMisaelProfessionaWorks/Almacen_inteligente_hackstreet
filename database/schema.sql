@@ -116,7 +116,7 @@ CREATE TABLE outbox (
 CREATE TABLE unmatched_receipts (
     id BIGSERIAL PRIMARY KEY,
     receipt_event_id VARCHAR(255) NOT NULL,
-    sku VARCHAR(255) NOT NULL,
+    sku VARCHAR(255) NOT NULL, purchase_line_id INT, description TEXT, unit_price TEXT, currency VARCHAR(10), received_at TIMESTAMP WITH TIME ZONE, work_order_code VARCHAR(100),
     quantity NUMERIC NOT NULL,
     status VARCHAR(50) NOT NULL DEFAULT 'unresolved', -- unresolved, resolved
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()

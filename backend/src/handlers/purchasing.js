@@ -31,9 +31,12 @@ async function handlePurchaseItemReceived(client, eventId, payload) {
 
     if (partsRes.rows.length !== 1) {
         await client.query(`
-            INSERT INTO unmatched_receipts (receipt_event_id, sku, quantity)
-            VALUES ($1, $2, $3)
-        `, [eventId, part_number, quantity]);
+            INSERT INTO unmatched_receipts (
+                receipt_event_id, sku, quantity, purchase_line_id, description, 
+                unit_price, currency, received_at, work_order_code
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        `, [eventId, part_number, quantity, line_id, description, String(unit_price), currency, eventTime, work_order_code]);
 
         const outEventId = generateDeterministicId(`unmatched-${eventId}`);
         await queueOutboxEvent(client, 'inventory.events', `purchase_line:${line_id}`, {
@@ -52,6 +55,21 @@ async function handlePurchaseItemReceived(client, eventId, payload) {
     const partId = partsRes.rows[0].part_id;
     const locationId = 100;
 
+    await processReceiptAndShortages(client, eventId, {
+        partId,
+        locationId,
+        line_id,
+        quantity,
+        unit_price,
+        currency,
+        eventTime,
+        work_order_code
+    });
+}
+
+export async function processReceiptAndShortages(client, eventId, data) {
+    const { partId, locationId, line_id, quantity, unit_price, currency, eventTime, work_order_code } = data;
+
     await recordMovement(client, {
         partId,
         locationId,
@@ -61,7 +79,7 @@ async function handlePurchaseItemReceived(client, eventId, payload) {
         occurredAt: eventTime
     });
 
-    const outEventId = generateDeterministicId(`received-${eventId}`);
+    const outEventId = generateDeterministicId(`received-${eventId}-${Date.now()}`);
     await queueOutboxEvent(client, 'inventory.events', `part:${partId}`, {
         event_id: outEventId,
         type: 'stock.received',
@@ -69,12 +87,11 @@ async function handlePurchaseItemReceived(client, eventId, payload) {
         location_id: locationId,
         purchase_line_id: line_id,
         quantity: quantity,
-        unit_cost: unit_price ? Number(unit_price) : 0,
+        unit_cost: unit_price ? String(unit_price) : "0",
         currency: currency || 'MXN',
         occurred_at: eventTime
     });
 
-    // Regla 12: Surtir faltantes
     let remainingReceiptQty = quantity;
     let targetWoId = null;
     if (work_order_code) {
@@ -123,7 +140,7 @@ async function handlePurchaseItemReceived(client, eventId, payload) {
         const woCodeRes = await client.query(`SELECT code FROM work_orders WHERE work_order_id = $1`, [shortage.work_order_id]);
         const woCode = woCodeRes.rows.length > 0 ? woCodeRes.rows[0].code : null;
 
-        const resEventId = generateDeterministicId(`resolved-reserve-${eventId}-${shortage.id}-${resolvedCount}`);
+        const resEventId = generateDeterministicId(`resolved-reserve-${eventId}-${shortage.id}-${resolvedCount}-${Date.now()}`);
         await queueOutboxEvent(client, 'inventory.events', woCode, {
             event_id: resEventId,
             type: 'stock.reserved',
@@ -136,7 +153,7 @@ async function handlePurchaseItemReceived(client, eventId, payload) {
         });
 
         if (remainingShortage === 0 && woCode) {
-            const shortResEventId = generateDeterministicId(`resolved-shortage-${eventId}-${shortage.id}-${resolvedCount}`);
+            const shortResEventId = generateDeterministicId(`resolved-shortage-${eventId}-${shortage.id}-${resolvedCount}-${Date.now()}`);
             await queueOutboxEvent(client, 'inventory.events', woCode, {
                 event_id: shortResEventId,
                 type: 'stock.shortage_resolved',

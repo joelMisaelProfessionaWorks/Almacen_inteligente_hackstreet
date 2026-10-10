@@ -10,21 +10,55 @@ export async function processIssue(payload) {
 
     return await withTransaction(async (client) => {
         // Validar y descontar saldo
-        await recordMovement(client, {
-            partId: part_id,
-            locationId: location_id,
-            quantity: -Math.abs(quantity), // salida es negativo
-            type: 'issue',
-            referenceId: work_order_code,
-            occurredAt: eventTime
-        });
+        
 
         // Generar stock.issued
         const outEventId = generateDeterministicId(`issue-${work_order_code}-${part_id}-${eventTime}`);
         
-        // Obtener work_order_id a partir del code
         const woRes = await client.query(`SELECT work_order_id FROM work_orders WHERE code = $1`, [work_order_code]);
         const work_order_id = woRes.rows.length > 0 ? woRes.rows[0].work_order_id : null;
+
+        // Reduce reservation
+        if (work_order_id) {
+            const issuedQty = Math.abs(quantity);
+            // We assume there's one active reservation for this part in this work order.
+            // Find bom_line_id
+            const resRows = await client.query(`
+                SELECT reservation_id, bom_line_id, reserved_quantity
+                FROM reservations
+                WHERE work_order_id = $1 AND status = 'active'
+            `, [work_order_id]);
+            
+            // Just reduce from the first one that matches part_id
+            for (const r of resRows.rows) {
+                // Check if bom_line part_id matches
+                const bomRes = await client.query(`SELECT part_id FROM bom_lines WHERE bom_line_id = $1`, [r.bom_line_id]);
+                if (bomRes.rows.length > 0 && bomRes.rows[0].part_id == part_id) {
+                    const toReduce = Math.min(Number(r.reserved_quantity), issuedQty);
+                    if (toReduce > 0) {
+                        await client.query(`
+                            UPDATE reservations SET reserved_quantity = reserved_quantity - $1
+                            WHERE reservation_id = $2
+                        `, [toReduce, r.reservation_id]);
+                        
+                        await client.query(`
+                            UPDATE balances SET reserved = reserved - $1
+                            WHERE part_id = $2 AND location_id = $3
+                        `, [toReduce, part_id, location_id]);
+                        break;
+                    }
+                }
+            }
+
+        } 
+        await recordMovement(client, {
+            partId: part_id,
+            locationId: location_id,
+            quantity: -Math.abs(quantity),
+            type: 'issue',
+            referenceId: work_order_code,
+            occurredAt: eventTime
+        });
 
         const outPayload = {
             event_id: outEventId,
@@ -122,8 +156,7 @@ export async function processCount(payload) {
                     type: 'stock.adjusted',
                     part_id: parseInt(part_id, 10),
                     location_id: parseInt(location_id, 10),
-                    previous_quantity: currentOnHand,
-                    new_quantity: counted_quantity,
+                    delta: diff,
                     reason
                 };
 

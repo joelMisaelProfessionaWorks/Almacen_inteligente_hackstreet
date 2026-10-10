@@ -18,8 +18,8 @@ const consumer = kafka.consumer({ groupId: 'warehouse-group' });
 async function retryPendingEvents() {
     try {
         const res = await pool.query(`
-            SELECT id, event_id, topic, payload FROM pending_events 
-            ORDER BY id ASC LIMIT 50
+            SELECT event_id, topic, payload FROM pending_events 
+            ORDER BY next_attempt_at ASC LIMIT 50
         `);
         for (const row of res.rows) {
             const topic = row.topic;
@@ -27,26 +27,27 @@ async function retryPendingEvents() {
             const eventId = row.event_id;
             
             try {
+                let success = true;
                 if (topic === 'shop.catalog') {
-                    await handleCatalogEvent(eventId, payload.type, payload);
+                    success = await handleCatalogEvent(eventId, payload.__type, payload) !== false;
                 } else if (topic === 'shop.purchasing') {
-                    await handlePurchasingEvent(eventId, payload.type, payload);
+                    success = await handlePurchasingEvent(eventId, payload.__type, payload) !== false;
                 } else if (topic === 'shop.work_orders') {
-                    await handleWorkOrderEvent(eventId, payload.type, payload);
+                    success = await handleWorkOrderEvent(eventId, payload.__type, payload) !== false;
                 } else if (topic === 'shop.inspections') {
-                    await handleInspectionEvent(eventId, payload.type, payload);
+                    success = await handleInspectionEvent(eventId, payload.__type, payload) !== false;
                 }
                 
                 // If success, delete from pending_events
-                await pool.query(`DELETE FROM pending_events WHERE id = $1`, [row.id]);
-                console.log(`Successfully retried event ${eventId} on ${topic}`);
+                if (success) {                 await pool.query(`DELETE FROM pending_events WHERE event_id = $1`, [eventId]);
+                console.log(`Successfully retried event ${eventId} on ${topic}`); }
             } catch (err) {
                 if (err.code === '23503') {
                     // Still missing FK dependencies, ignore and keep waiting
-                    await pool.query(`UPDATE pending_events SET attempts = attempts + 1, last_error = $1 WHERE id = $2`, [err.message, row.id]);
+                    await pool.query(`UPDATE pending_events SET attempts = attempts + 1, last_error = $1 WHERE event_id = $2`, [err.message, eventId]);
                 } else {
                     console.error(`Error retrying event ${eventId}:`, err);
-                    await pool.query(`UPDATE pending_events SET attempts = attempts + 1, last_error = $1 WHERE id = $2`, [err.message, row.id]);
+                    await pool.query(`UPDATE pending_events SET attempts = attempts + 1, last_error = $1 WHERE event_id = $2`, [err.message, eventId]);
                 }
             }
         }

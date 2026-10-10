@@ -8,7 +8,7 @@ const pool = new Pool({
     connectionString: process.env.DATABASE_URL
 });
 
-export async function testDbConnection() {
+pool.on('error', (err, client) => { console.error('Unexpected error on idle client', err); }); export async function testDbConnection() {
     try {
         const client = await pool.connect();
         console.log('Successfully connected to database');

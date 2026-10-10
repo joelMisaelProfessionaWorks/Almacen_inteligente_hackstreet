@@ -674,11 +674,15 @@ function App() {
           <h2>Salida contra orden</h2>
           <label className="field">
             <span className="field-label">Orden de trabajo</span>
-            <input
+            <select
               value={issue.work_order_code}
-              onChange={(event) => setIssue((current) => ({ ...current, work_order_code: event.target.value.toUpperCase() }))}
-              placeholder="R061026012"
-            />
+              onChange={(event) => setIssue((current) => ({ ...current, work_order_code: event.target.value }))}
+            >
+              <option value="">Selecciona una orden...</option>
+              {workOrders.map((wo) => (
+                <option key={wo.work_order_id} value={wo.code}>{wo.code}</option>
+              ))}
+            </select>
           </label>
           <LookupField
             label="Ubicación"

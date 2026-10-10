@@ -52,7 +52,7 @@ export function setupApiRoutes(app) {
 
             res.json({
                 part_id: parseInt(partId),
-                movements: result.rows.map(r => ({
+                entries: result.rows.map(r => ({
                     movement_id: r.movement_id.toString(),
                     location_id: r.location_id,
                     quantity: Number(r.quantity),

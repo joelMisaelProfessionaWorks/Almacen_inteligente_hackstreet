@@ -37,8 +37,9 @@ export async function handleCatalogEvent(eventId, type, payload) {
 }
 
 async function handlePartUpserted(client, payload) {
-    const { id, sku, name, description, unit_of_measure } = payload;
+    const { part_id, sku, name, description, unit } = payload;
     const sku_norm = sku ? sku.trim().toUpperCase().replace(/\s+/g, ' ') : null;
+    const unit_of_measure = unit ? unit.name : null;
 
     await client.query(`
         INSERT INTO parts (part_id, sku, sku_norm, name, description, unit_of_measure)
@@ -49,18 +50,18 @@ async function handlePartUpserted(client, payload) {
             name = EXCLUDED.name,
             description = EXCLUDED.description,
             unit_of_measure = EXCLUDED.unit_of_measure
-    `, [id, sku, sku_norm, name, description, unit_of_measure]);
+    `, [part_id, sku, sku_norm, name, description, unit_of_measure]);
 }
 
 async function handleLocationUpserted(client, payload) {
-    const { id, code, name } = payload;
+    const { location_id, code, name } = payload;
     await client.query(`
         INSERT INTO locations (location_id, code, name)
         VALUES ($1, $2, $3)
         ON CONFLICT (location_id) DO UPDATE SET
             code = EXCLUDED.code,
             name = EXCLUDED.name
-    `, [id, code, name]);
+    `, [location_id, code, name]);
 }
 
 async function handleBomUpserted(client, payload) {
@@ -74,7 +75,7 @@ async function handleBomUpserted(client, payload) {
                 part_id = EXCLUDED.part_id,
                 qty_per_unit = EXCLUDED.qty_per_unit,
                 group_name = EXCLUDED.group_name
-        `, [line.id, work_order_id, line.part_id, line.qty_per_unit, line.group_name]);
+        `, [line.bom_line_id, work_order_id, line.part_id, line.qty_per_unit, line.group_name]);
     }
 }
 

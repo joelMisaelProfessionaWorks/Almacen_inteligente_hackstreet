@@ -1,10 +1,9 @@
 import { queueOutboxEvent, generateDeterministicId } from './events.js';
 
 export async function processInspectionApproved(client, eventId, payload) {
-    const { id: inspection_id, work_order_id, lines, occurred_at } = payload;
+    const { inspection_id, work_order_id, items, occurred_at } = payload;
     const eventTime = occurred_at || new Date().toISOString();
 
-    // Validar si la orden está dada de baja (deleted) o la inspeccion ya fue anulada
     const woRes = await client.query(`SELECT code, deleted_at FROM work_orders WHERE work_order_id = $1`, [work_order_id]);
     if (woRes.rows.length === 0) throw new Error(`Work order ${work_order_id} not found`);
     const wo = woRes.rows[0];
@@ -17,30 +16,25 @@ export async function processInspectionApproved(client, eventId, payload) {
     const inspRes = await client.query(`SELECT voided_at FROM inspections WHERE inspection_id = $1`, [inspection_id]);
     if (inspRes.rows.length > 0 && inspRes.rows[0].voided_at) {
         console.log(`Ignoring inspection ${inspection_id} because it was already voided`);
-        return; // Aprobación tardía
+        return;
     }
 
-    if (!lines || lines.length === 0) return; // items: [] normal
+    if (!items || items.length === 0) return;
 
-    for (const line of lines) {
-        // Regla 1: Solo action = buy reserva. repair u otros ignorados
+    for (const line of items) {
         if (line.action !== 'buy') continue;
 
-        // Necesitamos datos del BOM
         const bomRes = await client.query(`SELECT part_id, qty_per_unit FROM bom_lines WHERE bom_line_id = $1`, [line.bom_line_id]);
         if (bomRes.rows.length === 0) throw new Error(`BOM line ${line.bom_line_id} not found`);
         const bom = bomRes.rows[0];
 
-        // Regla 5: quantity null -> fallback a qty_per_unit. Si es null -> missing quantity null
         let quantity = line.quantity;
         if (quantity === null || quantity === undefined) {
             quantity = bom.qty_per_unit;
         }
 
-        // Regla 6: part_id null
         const partId = line.part_id;
         if (partId === null || partId === undefined) {
-            // Genera shortage sin part_id, no reserva nada
             const outEventId = generateDeterministicId(`shortage-${eventId}-${line.bom_line_id}`);
             await client.query(`INSERT INTO shortages (work_order_id, missing_quantity) VALUES ($1, $2)`, [work_order_id, quantity]);
             
@@ -55,8 +49,6 @@ export async function processInspectionApproved(client, eventId, payload) {
             continue;
         }
 
-        // Regla 2 y 3: Reemplazo por (work_order, bom_line). 
-        // Ver cuanta cantidad ya estaba reservada para esta línea.
         const prevRes = await client.query(`
             SELECT reserved_quantity FROM reservations 
             WHERE work_order_id = $1 AND bom_line_id = $2
@@ -64,7 +56,6 @@ export async function processInspectionApproved(client, eventId, payload) {
 
         let previousReserved = prevRes.rows.length > 0 ? Number(prevRes.rows[0].reserved_quantity) : 0;
         
-        // Registrar o actualizar necesidad
         await client.query(`
             INSERT INTO needs (work_order_id, bom_line_id, inspection_id, required_quantity)
             VALUES ($1, $2, $3, $4)
@@ -76,8 +67,6 @@ export async function processInspectionApproved(client, eventId, payload) {
         const diff = quantity - previousReserved;
         
         if (diff > 0) {
-            // Necesitamos reservar 'diff' adicionales
-            // Bloqueamos balances de todas las ubicaciones para esta parte para buscar saldo
             const balRes = await client.query(`
                 SELECT location_id, on_hand, reserved, (on_hand - reserved) as available
                 FROM balances 
@@ -101,7 +90,6 @@ export async function processInspectionApproved(client, eventId, payload) {
                 newlyReserved += toReserve;
             }
 
-            // Actualizar la reserva
             await client.query(`
                 INSERT INTO reservations (work_order_id, bom_line_id, reserved_quantity, status)
                 VALUES ($1, $2, $3, 'active')
@@ -122,7 +110,6 @@ export async function processInspectionApproved(client, eventId, payload) {
                 });
             }
 
-            // Si sobró need, es shortage
             if (needed > 0) {
                 const shortEventId = generateDeterministicId(`shortage-${eventId}-${line.bom_line_id}`);
                 await client.query(`
@@ -141,7 +128,6 @@ export async function processInspectionApproved(client, eventId, payload) {
             }
 
         } else if (diff < 0) {
-            // La necesidad bajó, tenemos que liberar -diff reservas
             const toRelease = Math.abs(diff);
             await client.query(`
                 UPDATE reservations 
@@ -149,7 +135,6 @@ export async function processInspectionApproved(client, eventId, payload) {
                 WHERE work_order_id = $2 AND bom_line_id = $3
             `, [toRelease, work_order_id, line.bom_line_id]);
 
-            // Devolver a balances (descontar de reserved)
             await releaseFromBalances(client, partId, toRelease);
         }
     }
@@ -163,7 +148,6 @@ export async function releaseWorkOrderReservations(client, work_order_id, eventI
     `, [work_order_id]);
 
     for (const r of resList.rows) {
-        // Find partId
         const bomRes = await client.query(`SELECT part_id FROM bom_lines WHERE bom_line_id = $1`, [r.bom_line_id]);
         if (bomRes.rows.length > 0 && bomRes.rows[0].part_id) {
             await releaseFromBalances(client, bomRes.rows[0].part_id, r.reserved_quantity);
@@ -172,11 +156,9 @@ export async function releaseWorkOrderReservations(client, work_order_id, eventI
 
     await client.query(`UPDATE reservations SET reserved_quantity = 0, status = 'released' WHERE work_order_id = $1`, [work_order_id]);
     await client.query(`UPDATE shortages SET status = 'closed' WHERE work_order_id = $1 AND status = 'open'`, [work_order_id]);
-    // TODO: Emitir eventos en caso de ser necesario (el contrato no exige un evento de "liberación", solo se cierran)
 }
 
 export async function releaseInspectionReservations(client, inspection_id, eventId, eventTime) {
-    // Buscar líneas de need de esta inspección
     const needs = await client.query(`SELECT work_order_id, bom_line_id FROM needs WHERE inspection_id = $1`, [inspection_id]);
     
     for (const need of needs.rows) {
@@ -197,8 +179,6 @@ export async function releaseInspectionReservations(client, inspection_id, event
 }
 
 async function releaseFromBalances(client, partId, amountToRelease) {
-    // Liberar reserva de la ubicación que lo tenga. 
-    // Empezamos descontando de las que tengan más reservado.
     let remaining = amountToRelease;
     const balRes = await client.query(`
         SELECT location_id, reserved 

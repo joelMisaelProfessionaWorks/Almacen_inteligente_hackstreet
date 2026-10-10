@@ -10,26 +10,25 @@ export async function handleInspectionEvent(eventId, type, payload) {
 
         const { processInspectionApproved, releaseInspectionReservations } = await import('../domain/reservations.js');
 
-        // Upsert inspection to track it for voiding later
-        if (payload.id && payload.work_order_id) {
+        const inspection_id = payload.inspection_id;
+        const work_order_id = payload.work_order_id;
+
+        if (inspection_id && work_order_id) {
              await client.query(`
                 INSERT INTO inspections (inspection_id, work_order_id)
                 VALUES ($1, $2)
                 ON CONFLICT (inspection_id) DO NOTHING
-            `, [payload.id, payload.work_order_id]);
+            `, [inspection_id, work_order_id]);
         }
 
         if (type === 'inspection.approved') {
             await processInspectionApproved(client, eventId, payload);
         } else if (type === 'inspection.voided') {
-            // Regla 13: inspection.voided -> liberar reservas de esta inspeccion
             await client.query(`
                 UPDATE inspections SET voided_at = NOW() WHERE inspection_id = $1
-            `, [payload.id]);
+            `, [inspection_id]);
 
-            await releaseInspectionReservations(client, payload.id, eventId, payload.occurred_at);
-        } else {
-            // Regla 1, 4: rejected, discarded, etc. no hacen nada.
+            await releaseInspectionReservations(client, inspection_id, eventId, payload.occurred_at);
         }
     });
 }

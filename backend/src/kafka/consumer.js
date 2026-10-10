@@ -31,20 +31,30 @@ export async function startConsumer() {
 
     await consumer.run({
         eachMessage: async ({ topic, partition, message }) => {
-            const eventId = message.key ? message.key.toString() : null;
             const payload = JSON.parse(message.value.toString());
             
-            console.log(`Received event on ${topic}:`, { eventId, type: payload.type });
+            // Extract the envelope properties
+            const eventId = payload.event_id;
+            const eventType = payload.event_type;
+            const data = payload.data;
+            const occurredAt = payload.occurred_at;
+            
+            // Attach occurred_at into data for handlers to use if needed
+            if (data && typeof data === 'object') {
+                data.occurred_at = occurredAt;
+            }
+
+            console.log(`Received event on ${topic}:`, { eventId, type: eventType });
 
             try {
                 if (topic === 'shop.catalog') {
-                    await handleCatalogEvent(eventId, payload.type, payload);
+                    await handleCatalogEvent(eventId, eventType, data);
                 } else if (topic === 'shop.purchasing') {
-                    await handlePurchasingEvent(eventId, payload.type, payload);
+                    await handlePurchasingEvent(eventId, eventType, data);
                 } else if (topic === 'shop.work_orders') {
-                    await handleWorkOrderEvent(eventId, payload.type, payload);
+                    await handleWorkOrderEvent(eventId, eventType, data);
                 } else if (topic === 'shop.inspections') {
-                    await handleInspectionEvent(eventId, payload.type, payload);
+                    await handleInspectionEvent(eventId, eventType, data);
                 }
             } catch (err) {
                 console.error(`Error processing event ${eventId} on topic ${topic}:`, err);

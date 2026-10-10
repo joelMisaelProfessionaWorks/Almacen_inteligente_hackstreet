@@ -15,20 +15,18 @@ export async function handleWorkOrderEvent(eventId, type, payload) {
                 ON CONFLICT (work_order_id) DO UPDATE SET
                     code = EXCLUDED.code,
                     status = EXCLUDED.status
-            `, [payload.id, payload.code, payload.status]);
+            `, [payload.work_order_id, payload.code, payload.status || 'opened']);
         } else if (type === 'work_order.stage_changed') {
             await client.query(`
                 UPDATE work_orders SET status = $1 WHERE work_order_id = $2
-            `, [payload.stage, payload.id]);
+            `, [payload.stage, payload.work_order_id]);
         } else if (type === 'work_order.deleted') {
-            // Regla 14: Liberar reservas y cerrar faltantes, marcar deleted_at
             await client.query(`
                 UPDATE work_orders SET deleted_at = NOW(), status = 'deleted' WHERE work_order_id = $1
-            `, [payload.id]);
+            `, [payload.work_order_id]);
 
-            // TODO: Integrar liberación de reservas con domain/reservations.js
             const { releaseWorkOrderReservations } = await import('../domain/reservations.js');
-            await releaseWorkOrderReservations(client, payload.id, eventId, payload.occurred_at);
+            await releaseWorkOrderReservations(client, payload.work_order_id, eventId, payload.occurred_at);
         }
     });
 }

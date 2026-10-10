@@ -44,7 +44,7 @@ export function setupApiRoutes(app) {
         try {
             const partId = req.params.part_id;
             const result = await pool.query(`
-                SELECT movement_id, location_id, quantity, type, reference_id, occurred_at 
+                SELECT movement_id, location_id, quantity, type, reference_id, occurred_at, balance
                 FROM movements 
                 WHERE part_id = $1
                 ORDER BY occurred_at DESC, movement_id DESC
@@ -56,6 +56,7 @@ export function setupApiRoutes(app) {
                     movement_id: r.movement_id.toString(),
                     location_id: r.location_id,
                     quantity: Number(r.quantity),
+                    balance: Number(r.balance),
                     type: r.type,
                     reference_id: r.reference_id,
                     occurred_at: r.occurred_at

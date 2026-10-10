@@ -19,7 +19,7 @@ export async function handleWorkOrderEvent(eventId, type, payload) {
         } else if (type === 'work_order.stage_changed') {
             await client.query(`
                 UPDATE work_orders SET status = $1 WHERE work_order_id = $2
-            `, [payload.stage, payload.work_order_id]);
+            `, [payload.to_stage, payload.work_order_id]);
         } else if (type === 'work_order.deleted') {
             await client.query(`
                 UPDATE work_orders SET deleted_at = NOW(), status = 'deleted' WHERE work_order_id = $1

@@ -10,14 +10,7 @@ export async function processIssue(payload) {
 
     return await withTransaction(async (client) => {
         // Validar y descontar saldo
-        await recordMovement(client, {
-            partId: part_id,
-            locationId: location_id,
-            quantity: -Math.abs(quantity), // salida es negativo
-            type: 'issue',
-            referenceId: work_order_code,
-            occurredAt: eventTime
-        });
+        
 
         // Generar stock.issued
         const outEventId = generateDeterministicId(`issue-${work_order_code}-${part_id}-${eventTime}`);
@@ -56,7 +49,16 @@ export async function processIssue(payload) {
                     }
                 }
             }
-        }
+
+        } 
+        await recordMovement(client, {
+            partId: part_id,
+            locationId: location_id,
+            quantity: -Math.abs(quantity),
+            type: 'issue',
+            referenceId: work_order_code,
+            occurredAt: eventTime
+        });
 
         const outPayload = {
             event_id: outEventId,

@@ -30,7 +30,7 @@ export async function handleCatalogEvent(eventId, type, payload) {
         if (err.code === '23503') { // Foreign Key violation
             console.log(`[Out of order] Catalog event ${eventId} missing dependency, queuing to pending_events.`);
             await queuePendingEvent(eventId, 'shop.catalog', type, payload, err.message);
-        } else {
+        return false; } else {
             throw err;
         }
     }

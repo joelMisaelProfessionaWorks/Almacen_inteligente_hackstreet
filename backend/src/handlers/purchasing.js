@@ -29,10 +29,10 @@ async function handlePurchaseItemReceived(client, eventId, payload) {
     const sku_norm = part_number ? part_number.trim().toUpperCase().replace(/\s+/g, ' ') : '';
     
     // Hackathon race condition workaround: wait 50ms for part.upserted to be processed
-    await new Promise(resolve => setTimeout(resolve, 50));
+    await new Promise(resolve => setTimeout(resolve, 500));
 
     const partsRes = await client.query(`SELECT part_id FROM parts WHERE sku_norm = $1`, [sku_norm]);
-
+    console.log(`[DEBUG-SKU] Event ${eventId} sku_norm = ${sku_norm} count = ${partsRes.rows.length}`);
     if (partsRes.rows.length !== 1) {
         await client.query(`
             INSERT INTO unmatched_receipts (

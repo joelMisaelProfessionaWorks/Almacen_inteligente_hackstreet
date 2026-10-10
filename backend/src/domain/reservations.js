@@ -43,7 +43,7 @@ export async function processInspectionApproved(client, eventId, payload) {
 
         const partId = line.part_id || bom.part_id;
         
-        let partName = 'UNKNOWN';
+        let partName = line.name || bom.name || 'UNKNOWN';
         if (partId) {
             const partRowRes = await client.query(`SELECT name FROM parts WHERE part_id = $1`, [partId]);
             if (partRowRes.rows.length > 0) partName = partRowRes.rows[0].name;
@@ -152,6 +152,14 @@ export async function processInspectionApproved(client, eventId, payload) {
                     missing_quantity: Number(needed),
                     inspection_item_id: parseInt(line.inspection_item_id, 10),
                     occurred_at: eventTime
+                }); 
+                await queueOutboxEvent(client, 'inventory.events', 'part:' + partId, {
+                    event_id: generateDeterministicId('reorder-' + shortEventId),
+                    type: 'stock.reorder_suggested',
+                    part_id: parseInt(partId, 10),
+                    suggested_quantity: Number(needed),
+                    work_order_ids: [parseInt(work_order_id, 10)],
+                    occurred_at: eventTime
                 });
             }
 
@@ -200,6 +208,7 @@ export async function releaseInspectionReservations(client, inspection_id, event
             const bomRes = await client.query(`SELECT part_id FROM bom_lines WHERE bom_line_id = $1`, [need.bom_line_id]);
             if (bomRes.rows.length > 0 && bomRes.rows[0].part_id) {
                 await releaseFromBalances(client, bomRes.rows[0].part_id, qty);
+                await client.query("UPDATE shortages SET status = 'closed' WHERE work_order_id = $1 AND part_id = $2 AND status = 'open'", [need.work_order_id, bomRes.rows[0].part_id]);
             }
             await client.query(`UPDATE reservations SET reserved_quantity = 0, status = 'released' WHERE work_order_id = $1 AND bom_line_id = $2`, [need.work_order_id, need.bom_line_id]);
         }

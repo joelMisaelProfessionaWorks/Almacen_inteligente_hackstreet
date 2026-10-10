@@ -44,7 +44,7 @@ export function setupApiRoutes(app) {
         try {
             const partId = req.params.part_id;
             const result = await pool.query(`
-                SELECT movement_id, location_id, quantity, type, reference_id, occurred_at, balance
+                SELECT movement_id, location_id, quantity, type, reference_id, occurred_at, SUM(quantity) OVER (PARTITION BY part_id ORDER BY occurred_at ASC, movement_id ASC) as balance
                 FROM movements 
                 WHERE part_id = $1
                 ORDER BY occurred_at DESC, movement_id DESC
@@ -204,7 +204,7 @@ export function setupApiRoutes(app) {
                 LEFT JOIN parts p ON b.part_id = p.part_id
                 LEFT JOIN reservations r ON n.work_order_id = r.work_order_id AND n.bom_line_id = r.bom_line_id AND r.status = 'active'
                 LEFT JOIN shortages s ON n.work_order_id = s.work_order_id AND b.part_id = s.part_id AND s.status = 'open'
-                WHERE n.model_id = $1
+                WHERE n.work_order_id = $1
             `, [work_order_id]);
             
             const lines = linesRes.rows.map(r => {

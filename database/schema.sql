@@ -1,86 +1,150 @@
--- 1. Catálogo de Productos / Piezas del Taller
-CREATE TABLE items (
-    id SERIAL PRIMARY KEY, -- 'part_id' en el contrato
-    sku VARCHAR(50),       -- El contrato dice que puede ser null
+-- Almacén Inteligente Hackstreet
+-- Tiger Data (PostgreSQL) Schema
+
+-- Tablas de catálogo y entidades base
+CREATE TABLE parts (
+    part_id INT PRIMARY KEY,
+    sku VARCHAR(255),
+    sku_norm VARCHAR(255),
     name VARCHAR(255) NOT NULL,
     description TEXT,
-    min_stock_level INT DEFAULT 3, 
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    unit_of_measure VARCHAR(50)
 );
 
--- 2. Ubicaciones Físicas (Ej. Recepción U-100, Estante U-101)
 CREATE TABLE locations (
-    id SERIAL PRIMARY KEY,
-    code VARCHAR(50) UNIQUE NOT NULL,
-    description TEXT,
-    is_workbench BOOLEAN DEFAULT FALSE
+    location_id INT PRIMARY KEY,
+    code VARCHAR(100) UNIQUE NOT NULL,
+    name VARCHAR(255) NOT NULL
 );
 
--- 3. Proveedores (Para el Smart Procurement AI)
-CREATE TABLE providers (
-    id SERIAL PRIMARY KEY,
-    name VARCHAR(255) NOT NULL,
-    reliability_score INT DEFAULT 100 -- Para que la IA evalúe a quién comprarle
-);
-
--- 4. Catálogo de Proveedores vs Piezas (Precios y Tiempos de Entrega)
-CREATE TABLE item_providers (
-    item_id INT REFERENCES items(id),
-    provider_id INT REFERENCES providers(id),
-    unit_price DECIMAL(10,2) NOT NULL,
-    lead_time_days INT NOT NULL, -- Tiempo de entrega esperado
-    PRIMARY KEY (item_id, provider_id)
-);
-
--- 5. Lotes y Stock por Ubicación (FIFO)
-CREATE TABLE lots (
-    id SERIAL PRIMARY KEY,
-    item_id INT NOT NULL REFERENCES items(id),
-    location_id INT NOT NULL REFERENCES locations(id),
-    lot_code VARCHAR(100) UNIQUE NOT NULL,
-    physical_quantity INT NOT NULL DEFAULT 0,  -- 'on_hand'
-    reserved_quantity INT NOT NULL DEFAULT 0,  -- 'reserved'
-    entry_date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT check_quantities CHECK (
-        physical_quantity >= 0 AND 
-        reserved_quantity >= 0 AND 
-        reserved_quantity <= physical_quantity
-    )
-);
-
--- 6. Órdenes de Trabajo y Necesidades (Reservas ligadas al BOM)
 CREATE TABLE work_orders (
-    id SERIAL PRIMARY KEY,
-    order_number VARCHAR(100) UNIQUE NOT NULL, -- 'work_order_code'
-    status VARCHAR(50) DEFAULT 'PENDING',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    work_order_id INT PRIMARY KEY,
+    code VARCHAR(100) UNIQUE NOT NULL,
+    status VARCHAR(50) NOT NULL,
+    deleted_at TIMESTAMP WITH TIME ZONE NULL
 );
 
--- 7. Faltantes (Shortages)
+CREATE TABLE bom_lines (
+    bom_line_id INT PRIMARY KEY,
+    work_order_id INT NOT NULL REFERENCES work_orders(work_order_id),
+    part_id INT REFERENCES parts(part_id),
+    qty_per_unit NUMERIC,
+    group_name VARCHAR(255)
+);
+
+CREATE TABLE inspections (
+    inspection_id INT PRIMARY KEY,
+    work_order_id INT NOT NULL REFERENCES work_orders(work_order_id),
+    voided_at TIMESTAMP WITH TIME ZONE NULL
+);
+
+-- Libro Mayor
+CREATE TABLE balances (
+    part_id INT NOT NULL REFERENCES parts(part_id),
+    location_id INT NOT NULL REFERENCES locations(location_id),
+    on_hand NUMERIC NOT NULL DEFAULT 0 CHECK (on_hand >= 0),
+    reserved NUMERIC NOT NULL DEFAULT 0 CHECK (reserved >= 0),
+    PRIMARY KEY (part_id, location_id),
+    CONSTRAINT positive_available CHECK (on_hand >= reserved)
+);
+
+CREATE TABLE movements (
+    movement_id BIGSERIAL PRIMARY KEY,
+    part_id INT NOT NULL REFERENCES parts(part_id),
+    location_id INT NOT NULL REFERENCES locations(location_id),
+    quantity NUMERIC NOT NULL,
+    type VARCHAR(50) NOT NULL, -- receipt, issue, transfer_out, transfer_in, adjustment, count
+    reference_id VARCHAR(255), -- ID de evento o código que generó el movimiento
+    occurred_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Reservas, necesidades y faltantes
+CREATE TABLE needs (
+    work_order_id INT NOT NULL REFERENCES work_orders(work_order_id),
+    bom_line_id INT NOT NULL, -- No fk a bom_lines porque puede llegar antes
+    inspection_id INT NOT NULL REFERENCES inspections(inspection_id),
+    required_quantity NUMERIC NOT NULL,
+    PRIMARY KEY (work_order_id, bom_line_id)
+);
+
+CREATE TABLE reservations (
+    reservation_id BIGSERIAL PRIMARY KEY,
+    work_order_id INT NOT NULL REFERENCES work_orders(work_order_id),
+    bom_line_id INT NOT NULL,
+    reserved_quantity NUMERIC NOT NULL DEFAULT 0,
+    fulfilled_quantity NUMERIC NOT NULL DEFAULT 0,
+    status VARCHAR(50) NOT NULL DEFAULT 'active', -- active, released, fulfilled
+    UNIQUE (work_order_id, bom_line_id)
+);
+
 CREATE TABLE shortages (
-    id SERIAL PRIMARY KEY,
-    work_order_id INT REFERENCES work_orders(id),
-    item_id INT REFERENCES items(id),
-    inspection_item_id INT NOT NULL,
-    missing_quantity INT NOT NULL,
-    opened_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    resolved_at TIMESTAMP -- Null significa que sigue siendo un faltante
+    id BIGSERIAL PRIMARY KEY,
+    part_id INT REFERENCES parts(part_id), -- Puede ser NULL
+    work_order_id INT REFERENCES work_orders(work_order_id),
+    missing_quantity NUMERIC, -- Puede ser NULL
+    status VARCHAR(50) NOT NULL DEFAULT 'open', -- open, resolved, closed
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
--- 8. Tabla de Movimientos Inmutable (Audit Trail)
-CREATE TABLE inventory_movements (
-    id SERIAL PRIMARY KEY,
-    event_id UUID UNIQUE, -- IDEMPOTENCIA: ID único del evento de Kafka
-    item_id INT NOT NULL REFERENCES items(id),
-    location_id INT NOT NULL REFERENCES locations(id),
-    work_order_id INT REFERENCES work_orders(id), 
-    movement_type VARCHAR(50) NOT NULL, -- 'receipt', 'issue', 'transfer', 'adjustment'
-    quantity INT NOT NULL, -- Negativo cuando sale
-    notes TEXT, 
-    occurred_at TIMESTAMP NOT NULL, -- Hora real del suceso en el piso (del evento)
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+-- Gestión de Eventos y Patrones
+CREATE TABLE processed_events (
+    event_id UUID PRIMARY KEY,
+    occurred_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    processed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
--- Índices recomendados para la evaluación de Kafka y FIFO
-CREATE INDEX idx_lots_fifo ON lots(item_id, entry_date);
-CREATE INDEX idx_movements_event ON inventory_movements(event_id);
+CREATE TABLE pending_events (
+    event_id UUID PRIMARY KEY,
+    topic VARCHAR(255) NOT NULL,
+    payload JSONB NOT NULL,
+    attempts INT NOT NULL DEFAULT 0,
+    last_error TEXT,
+    next_attempt_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE outbox (
+    id BIGSERIAL PRIMARY KEY,
+    topic VARCHAR(255) NOT NULL,
+    key VARCHAR(255) NOT NULL,
+    payload JSONB NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    published_at TIMESTAMP WITH TIME ZONE NULL
+);
+
+-- Manejo de Excepciones y Reglas de Negocio
+CREATE TABLE unmatched_receipts (
+    id BIGSERIAL PRIMARY KEY,
+    receipt_event_id UUID NOT NULL,
+    sku VARCHAR(255) NOT NULL,
+    quantity NUMERIC NOT NULL,
+    status VARCHAR(50) NOT NULL DEFAULT 'unresolved', -- unresolved, resolved
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Extras (Smart Procurement / Políticas)
+CREATE TABLE policies (
+    part_id INT PRIMARY KEY REFERENCES parts(part_id),
+    min_stock NUMERIC NOT NULL DEFAULT 0,
+    max_stock NUMERIC NOT NULL DEFAULT 0,
+    reorder_point NUMERIC NOT NULL DEFAULT 0,
+    lead_time_days INT NOT NULL DEFAULT 0
+);
+
+CREATE TABLE reorder_suggestions (
+    part_id INT PRIMARY KEY REFERENCES parts(part_id),
+    suggested_quantity NUMERIC NOT NULL,
+    work_order_ids JSONB,
+    status VARCHAR(50) NOT NULL DEFAULT 'suggested', -- suggested, ordered
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Indices para optimización de queries del API
+CREATE INDEX idx_balances_part ON balances(part_id);
+CREATE INDEX idx_movements_part ON movements(part_id);
+CREATE INDEX idx_needs_work_order ON needs(work_order_id);
+CREATE INDEX idx_reservations_work_order ON reservations(work_order_id);
+CREATE INDEX idx_shortages_status ON shortages(status);
+CREATE INDEX idx_outbox_unpublished ON outbox(id) WHERE published_at IS NULL;
+CREATE INDEX idx_pending_events_next ON pending_events(next_attempt_at);

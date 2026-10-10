@@ -1,5 +1,7 @@
 import { Kafka } from 'kafkajs';
 import dotenv from 'dotenv';
+import { handleCatalogEvent } from '../handlers/catalog.js';
+import { handlePurchasingEvent } from '../handlers/purchasing.js';
 
 dotenv.config();
 
@@ -14,9 +16,6 @@ export async function startConsumer() {
     await consumer.connect();
     console.log('Kafka Consumer connected');
     
-    // As per PLAN.md rule 7: We must consume shop.catalog from beginning to end
-    // before consuming other topics to prevent dependency errors.
-    // For now, we subscribe to all topics the hackathon requires
     const topics = [
         'shop.catalog',
         'shop.work_orders',
@@ -34,7 +33,20 @@ export async function startConsumer() {
             const payload = JSON.parse(message.value.toString());
             
             console.log(`Received event on ${topic}:`, { eventId, type: payload.type });
-            // TODO: Route to handlers and process with idempotency
+
+            try {
+                if (topic === 'shop.catalog') {
+                    await handleCatalogEvent(eventId, payload.type, payload);
+                } else if (topic === 'shop.purchasing') {
+                    await handlePurchasingEvent(eventId, payload.type, payload);
+                } else if (topic === 'shop.work_orders') {
+                    // TODO: Step 3 (Reservations)
+                } else if (topic === 'shop.inspections') {
+                    // TODO: Step 3 (Reservations)
+                }
+            } catch (err) {
+                console.error(`Error processing event ${eventId} on topic ${topic}:`, err);
+            }
         },
     });
 }

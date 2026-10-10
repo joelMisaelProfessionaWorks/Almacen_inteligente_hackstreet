@@ -89,13 +89,13 @@ CREATE TABLE shortages (
 
 -- Gestión de Eventos y Patrones
 CREATE TABLE processed_events (
-    event_id UUID PRIMARY KEY,
+    event_id VARCHAR(255) PRIMARY KEY,
     occurred_at TIMESTAMP WITH TIME ZONE NOT NULL,
     processed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
 CREATE TABLE pending_events (
-    event_id UUID PRIMARY KEY,
+    event_id VARCHAR(255) PRIMARY KEY,
     topic VARCHAR(255) NOT NULL,
     payload JSONB NOT NULL,
     attempts INT NOT NULL DEFAULT 0,
@@ -115,7 +115,7 @@ CREATE TABLE outbox (
 -- Manejo de Excepciones y Reglas de Negocio
 CREATE TABLE unmatched_receipts (
     id BIGSERIAL PRIMARY KEY,
-    receipt_event_id UUID NOT NULL,
+    receipt_event_id VARCHAR(255) NOT NULL,
     sku VARCHAR(255) NOT NULL,
     quantity NUMERIC NOT NULL,
     status VARCHAR(50) NOT NULL DEFAULT 'unresolved', -- unresolved, resolved

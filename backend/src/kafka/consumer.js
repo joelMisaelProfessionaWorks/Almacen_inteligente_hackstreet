@@ -2,6 +2,8 @@ import { Kafka } from 'kafkajs';
 import dotenv from 'dotenv';
 import { handleCatalogEvent } from '../handlers/catalog.js';
 import { handlePurchasingEvent } from '../handlers/purchasing.js';
+import { handleWorkOrderEvent } from '../handlers/workOrders.js';
+import { handleInspectionEvent } from '../handlers/inspections.js';
 
 dotenv.config();
 
@@ -40,9 +42,9 @@ export async function startConsumer() {
                 } else if (topic === 'shop.purchasing') {
                     await handlePurchasingEvent(eventId, payload.type, payload);
                 } else if (topic === 'shop.work_orders') {
-                    // TODO: Step 3 (Reservations)
+                    await handleWorkOrderEvent(eventId, payload.type, payload);
                 } else if (topic === 'shop.inspections') {
-                    // TODO: Step 3 (Reservations)
+                    await handleInspectionEvent(eventId, payload.type, payload);
                 }
             } catch (err) {
                 console.error(`Error processing event ${eventId} on topic ${topic}:`, err);

@@ -1,0 +1,222 @@
+import { queueOutboxEvent, generateDeterministicId } from './events.js';
+
+export async function processInspectionApproved(client, eventId, payload) {
+    const { id: inspection_id, work_order_id, lines, occurred_at } = payload;
+    const eventTime = occurred_at || new Date().toISOString();
+
+    // Validar si la orden está dada de baja (deleted) o la inspeccion ya fue anulada
+    const woRes = await client.query(`SELECT code, deleted_at FROM work_orders WHERE work_order_id = $1`, [work_order_id]);
+    if (woRes.rows.length === 0) throw new Error(`Work order ${work_order_id} not found`);
+    const wo = woRes.rows[0];
+
+    if (wo.deleted_at) {
+        console.log(`Ignoring inspection ${inspection_id} because work_order ${work_order_id} is deleted`);
+        return;
+    }
+
+    const inspRes = await client.query(`SELECT voided_at FROM inspections WHERE inspection_id = $1`, [inspection_id]);
+    if (inspRes.rows.length > 0 && inspRes.rows[0].voided_at) {
+        console.log(`Ignoring inspection ${inspection_id} because it was already voided`);
+        return; // Aprobación tardía
+    }
+
+    if (!lines || lines.length === 0) return; // items: [] normal
+
+    for (const line of lines) {
+        // Regla 1: Solo action = buy reserva. repair u otros ignorados
+        if (line.action !== 'buy') continue;
+
+        // Necesitamos datos del BOM
+        const bomRes = await client.query(`SELECT part_id, qty_per_unit FROM bom_lines WHERE bom_line_id = $1`, [line.bom_line_id]);
+        if (bomRes.rows.length === 0) throw new Error(`BOM line ${line.bom_line_id} not found`);
+        const bom = bomRes.rows[0];
+
+        // Regla 5: quantity null -> fallback a qty_per_unit. Si es null -> missing quantity null
+        let quantity = line.quantity;
+        if (quantity === null || quantity === undefined) {
+            quantity = bom.qty_per_unit;
+        }
+
+        // Regla 6: part_id null
+        const partId = line.part_id;
+        if (partId === null || partId === undefined) {
+            // Genera shortage sin part_id, no reserva nada
+            const outEventId = generateDeterministicId(`shortage-${eventId}-${line.bom_line_id}`);
+            await client.query(`INSERT INTO shortages (work_order_id, missing_quantity) VALUES ($1, $2)`, [work_order_id, quantity]);
+            
+            await queueOutboxEvent(client, 'inventory.events', `work_order:${wo.code}`, {
+                event_id: outEventId,
+                type: 'stock.shortage_detected',
+                work_order_code: wo.code,
+                part_id: null,
+                missing_quantity: quantity,
+                occurred_at: eventTime
+            });
+            continue;
+        }
+
+        // Regla 2 y 3: Reemplazo por (work_order, bom_line). 
+        // Ver cuanta cantidad ya estaba reservada para esta línea.
+        const prevRes = await client.query(`
+            SELECT reserved_quantity FROM reservations 
+            WHERE work_order_id = $1 AND bom_line_id = $2
+        `, [work_order_id, line.bom_line_id]);
+
+        let previousReserved = prevRes.rows.length > 0 ? Number(prevRes.rows[0].reserved_quantity) : 0;
+        
+        // Registrar o actualizar necesidad
+        await client.query(`
+            INSERT INTO needs (work_order_id, bom_line_id, inspection_id, required_quantity)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (work_order_id, bom_line_id) DO UPDATE SET
+                inspection_id = EXCLUDED.inspection_id,
+                required_quantity = EXCLUDED.required_quantity
+        `, [work_order_id, line.bom_line_id, inspection_id, quantity]);
+
+        const diff = quantity - previousReserved;
+        
+        if (diff > 0) {
+            // Necesitamos reservar 'diff' adicionales
+            // Bloqueamos balances de todas las ubicaciones para esta parte para buscar saldo
+            const balRes = await client.query(`
+                SELECT location_id, on_hand, reserved, (on_hand - reserved) as available
+                FROM balances 
+                WHERE part_id = $1 AND (on_hand - reserved) > 0
+                FOR UPDATE
+            `, [partId]);
+
+            let needed = diff;
+            let newlyReserved = 0;
+
+            for (const bal of balRes.rows) {
+                if (needed <= 0) break;
+                const available = Number(bal.available);
+                const toReserve = Math.min(available, needed);
+                
+                await client.query(`
+                    UPDATE balances SET reserved = reserved + $1 WHERE part_id = $2 AND location_id = $3
+                `, [toReserve, partId, bal.location_id]);
+
+                needed -= toReserve;
+                newlyReserved += toReserve;
+            }
+
+            // Actualizar la reserva
+            await client.query(`
+                INSERT INTO reservations (work_order_id, bom_line_id, reserved_quantity, status)
+                VALUES ($1, $2, $3, 'active')
+                ON CONFLICT (work_order_id, bom_line_id) DO UPDATE SET
+                    reserved_quantity = reservations.reserved_quantity + $3,
+                    status = 'active'
+            `, [work_order_id, line.bom_line_id, newlyReserved]);
+
+            if (newlyReserved > 0) {
+                const resEventId = generateDeterministicId(`reserved-${eventId}-${line.bom_line_id}`);
+                await queueOutboxEvent(client, 'inventory.events', `part:${partId}`, {
+                    event_id: resEventId,
+                    type: 'stock.reserved',
+                    part_id: partId,
+                    work_order_code: wo.code,
+                    quantity: newlyReserved,
+                    occurred_at: eventTime
+                });
+            }
+
+            // Si sobró need, es shortage
+            if (needed > 0) {
+                const shortEventId = generateDeterministicId(`shortage-${eventId}-${line.bom_line_id}`);
+                await client.query(`
+                    INSERT INTO shortages (part_id, work_order_id, missing_quantity) 
+                    VALUES ($1, $2, $3)
+                `, [partId, work_order_id, needed]);
+
+                await queueOutboxEvent(client, 'inventory.events', `part:${partId}`, {
+                    event_id: shortEventId,
+                    type: 'stock.shortage_detected',
+                    work_order_code: wo.code,
+                    part_id: partId,
+                    missing_quantity: needed,
+                    occurred_at: eventTime
+                });
+            }
+
+        } else if (diff < 0) {
+            // La necesidad bajó, tenemos que liberar -diff reservas
+            const toRelease = Math.abs(diff);
+            await client.query(`
+                UPDATE reservations 
+                SET reserved_quantity = reserved_quantity - $1
+                WHERE work_order_id = $2 AND bom_line_id = $3
+            `, [toRelease, work_order_id, line.bom_line_id]);
+
+            // Devolver a balances (descontar de reserved)
+            await releaseFromBalances(client, partId, toRelease);
+        }
+    }
+}
+
+export async function releaseWorkOrderReservations(client, work_order_id, eventId, eventTime) {
+    const resList = await client.query(`
+        SELECT bom_line_id, reserved_quantity 
+        FROM reservations 
+        WHERE work_order_id = $1 AND status = 'active'
+    `, [work_order_id]);
+
+    for (const r of resList.rows) {
+        // Find partId
+        const bomRes = await client.query(`SELECT part_id FROM bom_lines WHERE bom_line_id = $1`, [r.bom_line_id]);
+        if (bomRes.rows.length > 0 && bomRes.rows[0].part_id) {
+            await releaseFromBalances(client, bomRes.rows[0].part_id, r.reserved_quantity);
+        }
+    }
+
+    await client.query(`UPDATE reservations SET reserved_quantity = 0, status = 'released' WHERE work_order_id = $1`, [work_order_id]);
+    await client.query(`UPDATE shortages SET status = 'closed' WHERE work_order_id = $1 AND status = 'open'`, [work_order_id]);
+    // TODO: Emitir eventos en caso de ser necesario (el contrato no exige un evento de "liberación", solo se cierran)
+}
+
+export async function releaseInspectionReservations(client, inspection_id, eventId, eventTime) {
+    // Buscar líneas de need de esta inspección
+    const needs = await client.query(`SELECT work_order_id, bom_line_id FROM needs WHERE inspection_id = $1`, [inspection_id]);
+    
+    for (const need of needs.rows) {
+        const res = await client.query(`
+            SELECT reserved_quantity FROM reservations 
+            WHERE work_order_id = $1 AND bom_line_id = $2 AND status = 'active'
+        `, [need.work_order_id, need.bom_line_id]);
+
+        if (res.rows.length > 0 && res.rows[0].reserved_quantity > 0) {
+            const qty = Number(res.rows[0].reserved_quantity);
+            const bomRes = await client.query(`SELECT part_id FROM bom_lines WHERE bom_line_id = $1`, [need.bom_line_id]);
+            if (bomRes.rows.length > 0 && bomRes.rows[0].part_id) {
+                await releaseFromBalances(client, bomRes.rows[0].part_id, qty);
+            }
+            await client.query(`UPDATE reservations SET reserved_quantity = 0, status = 'released' WHERE work_order_id = $1 AND bom_line_id = $2`, [need.work_order_id, need.bom_line_id]);
+        }
+    }
+}
+
+async function releaseFromBalances(client, partId, amountToRelease) {
+    // Liberar reserva de la ubicación que lo tenga. 
+    // Empezamos descontando de las que tengan más reservado.
+    let remaining = amountToRelease;
+    const balRes = await client.query(`
+        SELECT location_id, reserved 
+        FROM balances 
+        WHERE part_id = $1 AND reserved > 0 
+        ORDER BY reserved DESC
+        FOR UPDATE
+    `, [partId]);
+
+    for (const bal of balRes.rows) {
+        if (remaining <= 0) break;
+        const availableToFree = Number(bal.reserved);
+        const toFree = Math.min(availableToFree, remaining);
+
+        await client.query(`
+            UPDATE balances SET reserved = reserved - $1 WHERE part_id = $2 AND location_id = $3
+        `, [toFree, partId, bal.location_id]);
+
+        remaining -= toFree;
+    }
+}

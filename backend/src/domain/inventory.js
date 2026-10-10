@@ -122,8 +122,7 @@ export async function processCount(payload) {
                     type: 'stock.adjusted',
                     part_id: parseInt(part_id, 10),
                     location_id: parseInt(location_id, 10),
-                    previous_quantity: currentOnHand,
-                    new_quantity: counted_quantity,
+                    delta: diff,
                     reason
                 };
 

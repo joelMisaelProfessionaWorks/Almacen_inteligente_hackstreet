@@ -18,8 +18,8 @@ const consumer = kafka.consumer({ groupId: 'warehouse-group' });
 async function retryPendingEvents() {
     try {
         const res = await pool.query(`
-            SELECT id, event_id, topic, payload FROM pending_events 
-            ORDER BY id ASC LIMIT 50
+            SELECT event_id, topic, payload FROM pending_events 
+            ORDER BY next_attempt_at ASC LIMIT 50
         `);
         for (const row of res.rows) {
             const topic = row.topic;
@@ -38,15 +38,15 @@ async function retryPendingEvents() {
                 }
                 
                 // If success, delete from pending_events
-                await pool.query(`DELETE FROM pending_events WHERE id = $1`, [row.id]);
+                await pool.query(`DELETE FROM pending_events WHERE event_id = $1`, [eventId]);
                 console.log(`Successfully retried event ${eventId} on ${topic}`);
             } catch (err) {
                 if (err.code === '23503') {
                     // Still missing FK dependencies, ignore and keep waiting
-                    await pool.query(`UPDATE pending_events SET attempts = attempts + 1, last_error = $1 WHERE id = $2`, [err.message, row.id]);
+                    await pool.query(`UPDATE pending_events SET attempts = attempts + 1, last_error = $1 WHERE event_id = $2`, [err.message, eventId]);
                 } else {
                     console.error(`Error retrying event ${eventId}:`, err);
-                    await pool.query(`UPDATE pending_events SET attempts = attempts + 1, last_error = $1 WHERE id = $2`, [err.message, row.id]);
+                    await pool.query(`UPDATE pending_events SET attempts = attempts + 1, last_error = $1 WHERE event_id = $2`, [err.message, eventId]);
                 }
             }
         }
